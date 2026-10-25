@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# Environments / secrets
+venv/
+.venv/
+env/
+.env
+.env.*
+!.env.example
+*.key
+credentials.json
+token.json
+# User data: never commit media, caches, models, outputs
+projects/
+output/
+outputs/
+input/
+cache/
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.wav
+*.mp3
+*.srt
+*.ass
+*.pt
+*.bin
+*.onnx
+*.gguf
+*.safetensors
+models/
+tmp/
+*.log
+# Local overrides
+configs/local.yaml
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+!tests/fixtures/README.md

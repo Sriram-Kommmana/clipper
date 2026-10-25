@@ -1,0 +1,13 @@
+# Runtime dependencies (all open source, all run locally).
+# Python 3.10 - 3.13 supported. See THIRD_PARTY_NOTICES.md for licences.
+pydantic>=2.5,<3
+PyYAML>=6.0
+numpy>=1.26
+scipy>=1.11
+librosa>=0.10.2
+soundfile>=0.12
+opencv-python-headless>=4.8       # use "opencv-python" instead if you want cv2.imshow
+faster-whisper>=1.0.3
+gradio>=6.0,<7
+requests>=2.31
+psutil>=5.9
