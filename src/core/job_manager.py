@@ -43,7 +43,7 @@ STAGE_LABELS = {
     "candidates": "Candidate generation", "scoring": "Scoring", "selection": "Selection",
 }
 STAGE_WEIGHT = {"transcribe": 0.40, "audio": 0.05, "scenes": 0.10, "candidates": 0.22, "scoring": 0.18, "selection": 0.05}
-VERSIONS = {"audio": 1, "scenes": 1, "cand": 2, "score": 2}
+VERSIONS = {"audio": 1, "scenes": 1, "cand": 3, "score": 2}
 
 ProgressCb = Callable[[str, float, float, str], None]   # stage, stage_fraction, overall_fraction, message
 

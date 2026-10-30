@@ -5,15 +5,15 @@ from dataclasses import dataclass
 
 LANG_HINT = "Write title, caption and explanation in the language of the transcript ({language})."
 
-MOMENT_SYSTEM = """You are an assistant to a video editor. You read a timestamped transcript and find \
+MOMENT_SYSTEM = """You are an assistant to a video editor. You read a numbered transcript and find \
 self-contained moments that work as standalone short vertical clips.
 
 STRICT RULES
 1. Use ONLY information present in the transcript. Never invent events, quotes, names, numbers or claims.
-2. Timestamps are seconds from the video start and must be copied from the transcript markers [start-end]. \
-Start at the beginning of the sentence where the setup begins; end right after the payoff. Never start or end mid-sentence.
+2. Each transcript line is written as "line number: (seconds) text". A moment spans MANY consecutive lines, never a single line. \
+"first_line" is the number of the line where the setup begins; "last_line" is the number of the line where the payoff ends.
 3. A moment must make sense without the rest of the video and must contain its own setup AND its payoff.
-4. Moment length must be between {min_s} and {max_s} seconds. Moments must not overlap each other.
+4. Add up the seconds of its lines: a moment must last between {min_s} and {max_s} seconds in total. Moments must not overlap each other.
 5. Categories: story (a narrated event with beginning and end), funny, emotional, surprising (surprising statement or \
 revelation), insight (useful or illuminating explanation), quote (a memorable standalone line), reaction (a strong reaction \
 to something just said or done).
@@ -25,11 +25,11 @@ sentence on why this moment works. {lang_hint}
 Reply with JSON only."""
 
 MOMENT_USER = """Transcript section ({a:.0f}s - {b:.0f}s), language: {language}.
-Moments must lie fully inside this section.
+Moments must use only the lines below.
 
 {transcript}
 
-Find at most {max_moments} moments. Reply as {{"moments": [{{"start": 0.0, "end": 0.0, "category": "story", "title": "", \
+Find at most {max_moments} moments. Reply as {{"moments": [{{"title": "", "category": "story", "first_line": 0, "last_line": 0, \
 "explanation": "", "hook": "", "caption": "", "context_completeness": 5, "payoff": 5, "confidence": 5}}]}}."""
 
 SCORE_SYSTEM = """You are a strict editor judging short-video clip candidates. For each candidate you see the clip's \

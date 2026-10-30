@@ -9,10 +9,9 @@ video → transcribe → audio & scene analysis → find moments (local LLM) →
       → review in browser (preview, approve/reject, edit bounds & captions) → export MP4 + SRT + metadata
 ```
 
-> **Honest status** (see [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) for details): everything except the two heavyweight models was
-> exercised for real in a Linux sandbox — FFmpeg rendering, captions, audio/scene analysis, caching/resume, the browser UI.
-> **Real Whisper and real Qwen3 inference have not been run** (the sandbox could not download them) and **nothing has been run on
-> Windows or on a GPU yet.** The model code paths are covered with fakes/mocks. Please run the checks in "First run" below on your laptop.
+> **Honest status** (see [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) for details): the full pipeline has now run on a Windows laptop with real
+> Whisper (`small`, CPU) and real Qwen3 (`qwen3:latest`, the 8.2B model), plus NVENC rendering, on one 3.4-minute text-to-speech test video.
+> **Not yet tried:** Whisper on a GPU, `qwen3:4b`, smart crop on real faces, long videos, and clip quality on real footage.
 
 ## Requirements
 * Windows 10/11 (also works on Linux/macOS), Python **3.10 – 3.13** (3.11/3.12 recommended)
@@ -77,7 +76,7 @@ Licences of dependencies/models: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md
 ## Tests
 ```bash
 pip install -r requirements-dev.txt
-pytest                                   # 137 tests, ~30 s, needs FFmpeg, no models/internet
+pytest                                   # 140 tests, ~30 s, needs FFmpeg, no models/internet
 pytest -m ollama tests/integration/test_ollama_smoke.py   # optional: real local Ollama model
 node tests/ui/ui_smoke.js …              # optional browser smoke test (see tests/ui/README.md)
 ```

@@ -21,8 +21,8 @@ CFG = load_config(local_path=None)
 LIM = Limits.from_config(CFG.selection)
 
 
-def moment(start, end, **kw):
-    d = dict(start=start, end=end, category="story", title="T", explanation="E", hook="", caption="C",
+def moment(first_line, last_line, **kw):
+    d = dict(first_line=first_line, last_line=last_line, category="story", title="T", explanation="E", hook="", caption="C",
              context_completeness=8, payoff=7, confidence=7)
     d.update(kw)
     return d
@@ -41,7 +41,7 @@ def test_sections_cover_transcript_with_overlap_and_limits():
     assert all(sum(len(x.text.split()) for x in s.segments) <= CFG.llm.section_max_words for s in secs)
     seen = {x.id for s in secs for x in s.segments}
     assert seen == {x.id for x in t.segments}, "every segment appears in at least one section"
-    assert "[0.0-" in secs[0].render()
+    assert secs[0].render().startswith("0: (5s) This is sentence number 0")
 
 
 def test_sections_word_cap_and_tiny_transcript():
@@ -66,12 +66,12 @@ def test_hook_verification():
 def test_moment_to_candidate_uses_transcript_not_model_text():
     t = make_transcript([(0, "So I walked into the room."), (4, "The lights went out!"), (8, "Everyone screamed loudly.")] , duration=60)
     sec = make_sections(t, CFG.llm)[0]
-    m = RawMoment(**moment(0, 12, hook="a fabricated hook about dragons", title="x"))
+    m = RawMoment(**moment(0, 2, hook="a fabricated hook about dragons", title="x"))
     c, why = moment_to_candidate(m, sec, t, load_config(overrides={"selection": {"min_duration_s": 6, "target_duration_s": 8}}, local_path=None), "fp")
     assert why is None and "lights went out" in c.excerpt
     assert c.hook == "So I walked into the room." and any("verbatim" in w for w in c.warnings)
     assert c.confidence == 70 and c.id == candidate_id("fp", 0, c.end, "story") and c.end == sec.end
-    ok = RawMoment(**moment(0, 12, hook="The lights went out!"))
+    ok = RawMoment(**moment(0, 2, hook="The lights went out!"))
     c2, _ = moment_to_candidate(ok, sec, t, load_config(overrides={"selection": {"min_duration_s": 6, "target_duration_s": 8}}, local_path=None), "fp")
     assert c2.hook == "The lights went out!" and not c2.warnings
 
@@ -79,11 +79,13 @@ def test_moment_to_candidate_uses_transcript_not_model_text():
 def test_moment_drops():
     t = long_transcript(5)
     sec = make_sections(t, CFG.llm)[0]
-    assert moment_to_candidate(RawMoment(**moment(50, 53)), sec, t, CFG, "fp")[0] is None      # too short
-    assert moment_to_candidate(RawMoment(**moment(0, 280)), sec, t, CFG, "fp")[0] is None      # way too long
+    assert moment_to_candidate(RawMoment(**moment(8, 8)), sec, t, CFG, "fp")[0] is None        # too short (one line)
+    assert moment_to_candidate(RawMoment(**moment(0, 46)), sec, t, CFG, "fp")[0] is None       # way too long
     assert moment_to_candidate(RawMoment(**moment(500, 520)), sec, t, CFG, "fp")[0] is None    # outside section
-    c, _ = moment_to_candidate(RawMoment(**moment(-5, 30)), sec, t, CFG, "fp")
-    assert c.start == 0, "times are clamped into the section"
+    assert moment_to_candidate(RawMoment(**moment(9, 4)), sec, t, CFG, "fp")[0] is None        # reversed range
+    c, _ = moment_to_candidate(RawMoment(**moment(-5, 4)), sec, t, CFG, "fp")
+    assert c.start == 0, "lines are clamped into the section"
+    assert c.end == sec.segments[4].end, "the clip ends with its last line"
 
 
 # ---------------------------------------------------------------- LLM generation
@@ -98,7 +100,8 @@ def test_llm_generation_merges_duplicates_across_sections():
         for i, s in enumerate(secs):
             if f"({s.start:.0f}s - {s.end:.0f}s)" in prompt:
                 if s.start <= boundary and boundary + 35 <= s.end:
-                    return json.dumps({"moments": [moment(boundary + (i % 2), boundary + 35 - (i % 2))]})
+                    first = next(n for n, seg in enumerate(s.segments) if seg.start >= boundary)
+                    return json.dumps({"moments": [moment(first + (i % 2), first + 6 - (i % 2))]})
         return json.dumps({"moments": []})
 
     llm = ScriptedLLM(respond)
@@ -111,7 +114,7 @@ def test_llm_generation_merges_duplicates_across_sections():
 def test_llm_generation_survives_bad_section_but_not_all():
     t = long_transcript(30)
     n = len(make_sections(t, CFG.llm))
-    seq = ["garbage"] * 3 + [json.dumps({"moments": [moment(700, 735)]})] * 50
+    seq = ["garbage"] * 3 + [json.dumps({"moments": [moment(10, 15)]})] * 50
     cands, stats = llm_candidates(t, CFG, ScriptedLLM(seq), "fp")
     assert stats["failed_sections"] == [0] and stats["sections"] == n
     with pytest.raises(LLMOutputError):

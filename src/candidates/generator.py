@@ -41,7 +41,7 @@ class Section:
     segments: list[TranscriptSegment]
 
     def render(self) -> str:
-        return "\n".join(f"[{s.start:.1f}-{s.end:.1f}] {s.text.strip()}" for s in self.segments if s.text.strip())
+        return "\n".join(f"{i}: ({s.end - s.start:.0f}s) {s.text.strip()}" for i, s in enumerate(self.segments))
 
 
 def candidate_id(fingerprint: str, start: float, end: float, category: str) -> str:
@@ -94,9 +94,10 @@ def first_sentence(text: str, max_words: int = 25) -> str:
 def moment_to_candidate(m: RawMoment, sec: Section, transcript: Transcript, cfg: AppConfig, fingerprint: str) -> tuple[Candidate | None, str | None]:
     """Validate/repair one LLM moment. Returns (candidate, None) or (None, reason_dropped)."""
     sel = cfg.selection
-    start, end = max(sec.start, m.start), min(sec.end, m.end)
-    if not (end > start):
-        return None, "end <= start after clamping to the section"
+    first, last = max(0, m.first_line), min(len(sec.segments) - 1, m.last_line)
+    if last < first:
+        return None, f"lines {m.first_line}-{m.last_line} are not a valid range in this section"
+    start, end = sec.segments[first].start, sec.segments[last].end
     dur = end - start
     if dur < sel.min_duration_s * 0.5:
         return None, f"too short ({dur:.0f}s)"

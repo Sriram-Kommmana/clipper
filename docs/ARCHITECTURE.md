@@ -93,7 +93,8 @@ blended with deterministic boundary/speech checks), **format_fit** (duration vs 
 
 ## Anti-hallucination measures
 
-* The model is asked only about the supplied timestamps; times are clamped into the section.
+* The model picks numbered transcript lines (`first_line`, `last_line`), clamped into the section; the code turns
+  them into times, so the model never states a timestamp.
 * Excerpts are always taken from the transcript by timestamp, never from model text.
 * The `hook` must be (fuzzily) present in the excerpt; otherwise it's replaced by the first sentence and a
   warning is added.

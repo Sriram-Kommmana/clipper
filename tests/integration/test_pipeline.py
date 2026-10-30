@@ -44,7 +44,7 @@ def llm_responder(fail=False):
         if fail:
             raise LLMUnavailableError("Ollama is down")
         if "Transcript section" in prompt:
-            return json.dumps({"moments": [{"start": 2.0, "end": 22.0, "category": "story", "title": "The lights went out",
+            return json.dumps({"moments": [{"first_line": 0, "last_line": 5, "category": "story", "title": "The lights went out",
                                             "explanation": "Setup and funny payoff.", "hook": "Then the lights went out and everyone started to scream!",
                                             "caption": "A strange day.", "context_completeness": 8, "payoff": 8, "confidence": 8}]})
         ids = re.findall(r"### Candidate (\S+) ", prompt)

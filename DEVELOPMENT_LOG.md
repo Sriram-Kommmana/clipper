@@ -93,14 +93,25 @@ no Ollama, Hugging Face/Ollama hosts blocked) — not on the target Windows lapt
 * Tests: **137 passed, 1 deselected** (the opt-in Ollama smoke test) in ≈30 s. Browser smoke test saved in `tests/ui/` (manual).
 * Python compatibility: `vermin` reports minimum 3.9 syntax; project documents 3.10–3.13 (only 3.13 was actually run).
 
+## Milestone 10 — first real-model run (Windows 11, Python 3.10, RTX 3050 6 GB)
+* Run on a 205 s text-to-speech test video with real Whisper `small` (CPU) and real `qwen3:latest` (8.2B). NVENC and the browser UI also worked.
+* Bugs the fake LLM could not reveal, now fixed:
+  * `json_schema_for` stripped every key named `title`, including the moment's `title` field, so every real LLM call failed validation.
+  * The model returned the timestamps of one transcript line (2-6 s), so every moment was dropped as too short. It now picks numbered
+    lines (`first_line`, `last_line`, after the title) and the code converts them to times.
+  * `opencv-python-headless>=4.8` resolved to 5.0, which removed the Haar and HOG detectors, so smart crop always fell back to a centre crop. Now `<5`.
+* Result after the fixes: 5 moments from 1 section, none dropped, no retries, all scored by the model; 2 selected, the others within `min_separation_s`.
+* Tests: 138 passed, 2 failed. Both failures are faulty tests: `test_robustness.py:151` reads a UTF-8 file with the system encoding, and
+  `test_transcription.py:122` assumes the machine has no CUDA.
+
 ## Known bugs / limitations
-* Real Whisper/Qwen3/GPU/NVENC/Windows paths unverified (see ROADMAP `[~]`).
+* Whisper on a GPU, `qwen3:4b` and smart crop on real faces are unverified (see ROADMAP `[~]`).
 * Transcription/LLM stages cannot resume mid-stage; a cancelled/failed stage restarts from its beginning.
 * Haar face detector is frontal-only; untested on real faces.
 * One open project / one job at a time (single-user local app).
 
 ## Next recommended actions (for you, on the laptop)
 1. `setup_windows.bat`, install Ollama, `python scripts\download_models.py`, `python scripts\check_environment.py`.
-2. `pytest` (should match 137 passed) and `pytest -m ollama tests/integration/test_ollama_smoke.py`.
+2. `pytest` (140 tests; see Milestone 10 for the 2 known failures) and `pytest -m ollama tests/integration/test_ollama_smoke.py`.
 3. Run a 3–5 min clip of authorised content through the UI; compare chosen moments against your judgement; tune `configs/local.yaml`.
 4. Report anything odd (device shown in the Transcription stage row, caption sync, crop quality).

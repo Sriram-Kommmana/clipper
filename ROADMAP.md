@@ -9,8 +9,8 @@ Legend: `[x]` implemented **and** exercised by tests or a real run in the dev sa
 
 ## Phase 2 — Minimum end-to-end pipeline
 - [x] Ingestion: probe, validation, rotation, no-audio/corrupt detection, content fingerprint
-- [~] Transcription (faster-whisper, word timestamps, JSON+SRT, device/compute plan, OOM→CPU fallback) — logic tested with a fake backend; **real inference never run**
-- [~] Ollama client + structured output + retries — tested against a fake Ollama HTTP server; **real Qwen3 never run** (opt-in smoke test provided)
+- [~] Transcription (faster-whisper, word timestamps, JSON+SRT, device/compute plan, OOM→CPU fallback) — real inference run on CPU; **GPU inference not run** (cuBLAS missing, fell back to CPU as designed)
+- [~] Ollama client + structured output + retries — run with real `qwen3:latest` (8.2B); **`qwen3:4b` not run**
 - [x] Narrative candidate generation (sections, verification against transcript, merge)
 - [x] Accurate one-pass FFmpeg cut + captions + 9:16 render (audio onset accuracy and caption sync measured)
 - [x] Review UI + export (driven in Chromium: open, preview, approve, export, error panel)
@@ -41,8 +41,8 @@ Legend: `[x]` implemented **and** exercised by tests or a real run in the dev sa
 - [x] Unit tests (137 passing incl. real FFmpeg renders)
 - [x] Integration tests on a generated MP4 with fake Whisper/scripted LLM
 - [x] Zero-paid-API audit (static test + observed: no outbound connection attempts during UI/pipeline runs)
-- [ ] Real pipeline on a short real video with real models — **user to run** (see README "First run")
-- [ ] Windows install check — **user to run** `setup_windows.bat`, `scripts/check_environment.py`
+- [~] Real pipeline with real models on Windows — run on a text-to-speech test video; **real footage still to try**
+- [~] Windows install check — existing venv and `scripts/check_environment.py` run on Windows 11 / Python 3.10; `setup_windows.bat` itself not run
 
 ## Phase 7 — Finalisation
 - [x] README, troubleshooting, third-party notices, architecture, reference analysis

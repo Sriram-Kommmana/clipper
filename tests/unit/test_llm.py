@@ -11,7 +11,7 @@ from src.llm.output_parser import extract_json, parse_model, strip_thinking, str
 from src.llm.prompts import moment_prompt, score_prompt
 from tests.fakes import FakeOllama, ScriptedLLM
 
-GOOD = {"moments": [{"start": 1, "end": 30, "category": "story", "title": "A title", "explanation": "x", "hook": "h",
+GOOD = {"moments": [{"first_line": 1, "last_line": 30, "category": "story", "title": "A title", "explanation": "x", "hook": "h",
                      "caption": "c", "context_completeness": 8, "payoff": 7, "confidence": 6}]}
 
 
@@ -43,8 +43,17 @@ def test_json_schema_is_flat():
     assert "scores" in json_schema_for(ScoreList)["properties"]
 
 
+def test_json_schema_keeps_every_required_field():
+    # A real model obeys the schema exactly, so a required field missing from "properties" fails every call.
+    for cls, key in ((MomentList, "moments"), (ScoreList, "scores")):
+        items = json_schema_for(cls)["properties"][key]["items"]
+        assert set(items["required"]) <= set(items["properties"])
+    fields = json_schema_for(MomentList)["properties"]["moments"]["items"]["properties"]
+    assert "title" in fields and "title" not in fields["first_line"]
+
+
 def test_structured_call_retries_then_succeeds():
-    llm = ScriptedLLM(["not json", '{"moments": [{"start": 1}]}', json.dumps(GOOD)])
+    llm = ScriptedLLM(["not json", '{"moments": [{"first_line": 1}]}', json.dumps(GOOD)])
     obj, attempts = structured_call(llm, "sys", "prompt", MomentList, retries=2)
     assert attempts == 3 and len(obj.moments) == 1
     assert "rejected" in llm.calls[1][1] and "rejected" in llm.calls[2][1]
