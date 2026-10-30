@@ -48,8 +48,8 @@ Headless: `python app.py run my_video.mp4 --export-top 5` · diagnostics: `pytho
   with a JSON schema; invalid answers are retried (max 2 times) with the validation error fed back.
 * Everything the model says is **checked against the transcript**: times are clamped, the excerpt is rebuilt from the transcript (never taken from the model),
   and a "hook" that is not a verbatim quote is replaced by the clip's first sentence with a warning.
-* Strong audio events (sustained excitement/laughter, big peaks) that the LLM did not cover become lower-confidence *reaction* candidates with a
-  lead-in so the setup is kept. They supplement the semantic candidates; loudness alone never makes a clip good.
+* Strong audio events (sustained excitement/laughter, big peaks, clearly louder than the recording's typical level) that the LLM did not cover become
+  lower-confidence *reaction* candidates with a lead-in so the setup is kept, widened to whole sentences. They supplement the semantic candidates; loudness alone never makes a clip good.
 * Duplicates (including the same moment seen by two sections) are merged; boundaries snap to sentence edges using word timestamps; invalid ranges are filtered with a reason.
 * **Score (0–100)** = weighted sum of hook, clarity, completeness, payoff, escalation (LLM rubric), length fit and audio/visual suitability (deterministic).
   Weights live in `configs/default.yaml`. **It is a ranking heuristic for ordering your review queue — not a prediction of views, engagement or revenue.**
@@ -76,7 +76,7 @@ Licences of dependencies/models: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md
 ## Tests
 ```bash
 pip install -r requirements-dev.txt
-pytest                                   # 140 tests, ~30 s, needs FFmpeg, no models/internet
+pytest                                   # 147 tests, ~30 s, needs FFmpeg, no models/internet
 pytest -m ollama tests/integration/test_ollama_smoke.py   # optional: real local Ollama model
 node tests/ui/ui_smoke.js …              # optional browser smoke test (see tests/ui/README.md)
 ```

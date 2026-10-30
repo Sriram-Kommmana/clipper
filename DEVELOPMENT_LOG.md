@@ -104,6 +104,15 @@ no Ollama, Hugging Face/Ollama hosts blocked) — not on the target Windows lapt
 * Tests: 138 passed, 2 failed. Both failures are faulty tests: `test_robustness.py:151` reads a UTF-8 file with the system encoding, and
   `test_transcription.py:122` assumes the machine has no CUDA.
 
+## Milestone 11 — audio triggers, boundaries and UI settings
+* Normal speech sat at 0.87 on the 0-1 energy scale, above the 0.75 "sustained" threshold, so talking counted as excitement. Peaks and sustained
+  spans must now also be `audio.loud_margin_db` (6 dB) above the recording's typical level. On the test video: 74 events before, 0 after.
+* Audio-triggered clips widen to whole sentences (`widen_to_sentences`), and are skipped if that exceeds `selection.max_duration_s`.
+* Previews and exports use the settings on screen instead of those from the last Run (driven in the browser: preview went from 540×960 to 360×640).
+* `set_config` builds on the startup config, so `--config` and `--projects-dir` are no longer lost. Opening a project clears the old progress message.
+* Headless runs write `logs/clipper.log`. The 2 faulty tests are fixed.
+* Tests: **147 passed**.
+
 ## Known bugs / limitations
 * Whisper on a GPU, `qwen3:4b` and smart crop on real faces are unverified (see ROADMAP `[~]`).
 * Transcription/LLM stages cannot resume mid-stage; a cancelled/failed stage restarts from its beginning.
@@ -112,6 +121,6 @@ no Ollama, Hugging Face/Ollama hosts blocked) — not on the target Windows lapt
 
 ## Next recommended actions (for you, on the laptop)
 1. `setup_windows.bat`, install Ollama, `python scripts\download_models.py`, `python scripts\check_environment.py`.
-2. `pytest` (140 tests; see Milestone 10 for the 2 known failures) and `pytest -m ollama tests/integration/test_ollama_smoke.py`.
+2. `pytest` (147 tests) and `pytest -m ollama tests/integration/test_ollama_smoke.py`.
 3. Run a 3–5 min clip of authorised content through the UI; compare chosen moments against your judgement; tune `configs/local.yaml`.
 4. Report anything odd (device shown in the Transcription stage row, caption sync, crop quality).

@@ -56,6 +56,7 @@ class AudioConfig(_Section):
     silence_floor_db: float = -50.0
     sustained_threshold: float = Field(0.75, ge=0, le=1)
     sustained_min_s: float = Field(3.0, gt=0)
+    loud_margin_db: float = Field(6.0, ge=0, le=30)
     change_sigma: float = Field(2.5, gt=0)
     peak_prominence: float = Field(0.25, gt=0, le=1)
 
@@ -252,6 +253,10 @@ class AppConfig(_Section):
         data = {s: getattr(self, s).model_dump(mode="json") for s in sorted(sections)}
         return hashlib.sha1(json.dumps(data, sort_keys=True).encode()).hexdigest()[:12]
 
+    def with_overrides(self, overrides: dict[str, Any]) -> "AppConfig":
+        """A validated copy with `overrides` applied on top. Raises ConfigError with a readable message."""
+        return _validate(_deep_merge(self.model_dump(mode="json"), overrides))
+
 
 def _deep_merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(base)
@@ -284,6 +289,10 @@ def load_config(
         data = _deep_merge(data, _read_yaml(Path(local_path)))
     if overrides:
         data = _deep_merge(data, overrides)
+    return _validate(data)
+
+
+def _validate(data: dict[str, Any]) -> AppConfig:
     try:
         return AppConfig.model_validate(data)
     except ValidationError as exc:

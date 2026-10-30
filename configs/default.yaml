@@ -32,6 +32,7 @@ audio:
   silence_floor_db: -50.0
   sustained_threshold: 0.75       # normalised energy (0-1) that counts as "high"
   sustained_min_s: 3.0
+  loud_margin_db: 6.0             # peaks/sustained spans must be this far above the recording's typical level (so normal speech is not "excitement")
   change_sigma: 2.5               # energy jump (in std-devs) that counts as a sudden change
   peak_prominence: 0.25
 

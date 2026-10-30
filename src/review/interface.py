@@ -192,6 +192,7 @@ def build_ui(wb: Workbench) -> gr.Blocks:
         keys = ["whisper", "device", "language", "llm_model", "use_llm", "perf", "min_d", "target_d", "max_d", "max_clips", "min_score",
                 "separation", "layout", "resolution", "hw", "subs_on", "subs_mode", "sub_pos", "font_size", "hi_color"]
 
+        @guard
         def apply_settings(*vals):
             wb.set_config(collect_overrides(dict(zip(keys, vals))))
 
@@ -334,8 +335,9 @@ def build_ui(wb: Workbench) -> gr.Blocks:
         review_tab.select(load_list, [view_rd], [cand_df])
         view_rd.change(load_list, [view_rd], [cand_df])
         refresh_btn.click(load_list, [view_rd], [cand_df])
-        cand_df.select(on_select, [view_rd], select_outputs).then(maybe_preview, [selected_id, auto_prev], [video, prev_note])
-        prev_btn.click(on_preview, [selected_id], [video, prev_note])
+        # previews and exports use the settings currently on screen, not those of the last analysis run
+        cand_df.select(on_select, [view_rd], select_outputs).then(apply_settings, setting_inputs, None).success(maybe_preview, [selected_id, auto_prev], [video, prev_note])
+        prev_btn.click(apply_settings, setting_inputs, None).success(on_preview, [selected_id], [video, prev_note])
         approve_btn.click(functools.partial(set_status, status="approved"), [selected_id, view_rd], [cand_df, status_md])
         reject_btn.click(functools.partial(set_status, status="rejected"), [selected_id, view_rd], [cand_df, status_md])
         pending_btn.click(functools.partial(set_status, status="pending"), [selected_id, view_rd], [cand_df, status_md])
@@ -344,7 +346,7 @@ def build_ui(wb: Workbench) -> gr.Blocks:
         bounds_btn.click(on_bounds, [selected_id, start_n, end_n, view_rd], [cand_df, info_md2, score_html, subs_tb, start_n, end_n])
         subs_btn.click(on_subs, [selected_id, subs_tb], [subs_tb])
         subs_reset.click(on_subs_reset, [selected_id], [subs_tb])
-        export_btn.click(on_export, None, [export_md, summary_md])
+        export_btn.click(apply_settings, setting_inputs, None).success(on_export, None, [export_md, summary_md])
         hw_btn.click(on_hw, None, [hw_out])
         log_btn.click(lambda: wb.log_text(300), None, [log_full]).then(on_errors, None, [err_md])
     return demo

@@ -77,7 +77,7 @@ def test_transcribe_stage_caches_and_writes_srt(tmp_path, sample_info, runner):
     be = FakeBackend(make_transcript())
     t, cached = transcribe_video(sample_info, store, cfg, runner, backend=be)
     assert not cached and len(t.segments) == 4
-    assert (store.cache_dir / "transcript.srt").read_text().startswith("1\n")
+    assert (store.cache_dir / "transcript.srt").read_text(encoding="utf-8").startswith("1\n")
     assert (store.work_dir / "audio_16k.wav").exists()
     assert store.state.warnings == ["pretend fallback"]
     # second call: served from cache, backend must not be touched
@@ -113,7 +113,8 @@ def test_cancel_propagates(tmp_path, sample_info, runner):
 
 
 def test_backend_plan_without_cuda(monkeypatch):
-    # In the sandbox (and on CPU-only machines) auto must plan CPU int8 and say nothing is wrong.
+    # On CPU-only machines auto must plan CPU int8 and say nothing is wrong.
+    monkeypatch.setattr("ctranslate2.get_cuda_device_count", lambda: 0)
     be = FasterWhisperBackend(load_config(local_path=None), 2)
     plan = be._plan()
     assert plan[-1][0] == "cpu" and plan[-1][1] == "int8"

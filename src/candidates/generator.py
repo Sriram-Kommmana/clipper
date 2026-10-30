@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import logging
 import re
@@ -155,6 +156,19 @@ def llm_candidates(
     return out, stats
 
 
+def widen_to_sentences(transcript: Transcript, start: float, end: float) -> tuple[float, float]:
+    """Move an edge that falls inside a sentence out to that sentence's edge. Edges between sentences stay put."""
+    starts, ends = transcript.sentence_starts(), transcript.sentence_ends()
+    prev_start = starts[bisect.bisect_right(starts, start) - 1] if bisect.bisect_right(starts, start) else None
+    prev_end = ends[bisect.bisect_right(ends, start) - 1] if bisect.bisect_right(ends, start) else None
+    if prev_start is not None and (prev_end is None or prev_start > prev_end):
+        start = prev_start
+    i, j = bisect.bisect_left(ends, end), bisect.bisect_left(starts, end)
+    if i < len(ends) and (j == len(starts) or ends[i] < starts[j]):
+        end = ends[i]
+    return start, end
+
+
 def audio_candidates(
     transcript: Transcript, audio: AudioAnalysis | None, cfg: AppConfig, existing: list[Candidate],
     fingerprint: str, source_duration: float,
@@ -181,6 +195,9 @@ def audio_candidates(
         end = min(source_duration, max(ev.end + 3.0, start + sel.min_duration_s))
         start = max(0.0, min(start, end - sel.min_duration_s))
         if end - start < sel.min_duration_s * 0.9:
+            continue
+        start, end = widen_to_sentences(transcript, start, end)
+        if end - start > sel.max_duration_s:    # no clean cut within the limit; these clips are only a supplement
             continue
         excerpt = transcript.text_in_range(start, end)
         warnings = ["Triggered by audio energy only - confirm in the preview that it is a real highlight."]

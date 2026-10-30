@@ -20,7 +20,7 @@ from pathlib import Path  # noqa: E402
 
 from config import load_config  # noqa: E402
 from src.core.exceptions import ClipperError  # noqa: E402
-from src.utils.logging_setup import setup_logging  # noqa: E402
+from src.utils.logging_setup import attach_project_log, setup_logging  # noqa: E402
 
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
@@ -72,6 +72,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("  warning:", w)
     projects = Path(args.out or cfg.paths.projects_dir).expanduser().resolve()
     store = create_or_open_project(info, projects)
+    attach_project_log(store.logs_dir)
     print(f"Project: {store.root}")
 
     def show(stage, frac, overall, msg):

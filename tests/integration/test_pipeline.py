@@ -255,12 +255,12 @@ def test_export_writes_all_artifacts_and_summary(env):
     folder = next(store.exports_dir.iterdir())
     names = sorted(p.suffix for p in folder.iterdir())
     assert names == [".json", ".mp4", ".srt", ".txt"]
-    meta = json.loads(next(folder.glob("*.json")).read_text())
+    meta = json.loads(next(folder.glob("*.json")).read_text(encoding="utf-8"))
     assert meta["title"] == "The lights went out" and meta["scores"]["total"] > 0 and "heuristic" in meta["note"]
     assert next(folder.glob("*.mp4")).stat().st_size > 5000 and prog[-1] == pytest.approx(1.0)
     again = export_clips(store, cfg, renderer, transcript, approved)
     assert again[0]["cached"], "re-export reuses the cached render"
     sm = write_summary(store)
     assert sm["candidates"]["approved"] == 1 and sm["timing_s"]["rendering"] > 0 and sm["timing_s"]["transcription"] >= 0
-    assert (store.root / "summary.md").read_text().startswith("# Project summary")
+    assert (store.root / "summary.md").read_text(encoding="utf-8").startswith("# Project summary")
     assert build_summary(store)["source"]["duration_s"] == 24.0

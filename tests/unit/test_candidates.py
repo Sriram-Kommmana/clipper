@@ -7,7 +7,7 @@ from config import load_config
 from src.analysis.audio_analysis import analyze_rms
 from src.analysis.frame_extraction import VisualCheck
 from src.candidates.generator import (audio_candidates, candidate_id, first_sentence, generate_candidates, heuristic_candidates,
-                                      hook_is_quote, llm_candidates, make_sections, moment_to_candidate)
+                                      hook_is_quote, llm_candidates, make_sections, moment_to_candidate, widen_to_sentences)
 from src.candidates.merger import merge_candidates, overlap_ratio
 from src.candidates.scorer import boundary_quality, compute_breakdown, format_fit, score_candidates, speech_density_score
 from src.candidates.selector import select_candidates
@@ -149,6 +149,28 @@ def test_audio_candidates_supplement_only_uncovered_events():
     covered = cand("x", 40, 70)
     assert audio_candidates(t, a, CFG, [covered], "fp", 120.0) == []
     assert audio_candidates(t, None, CFG, [], "fp", 120.0) == []
+
+
+def test_audio_candidates_never_cut_a_sentence():
+    words = " ".join(f"word{i}" for i in range(39))        # a 17.5 s sentence, longer than boundary snapping reaches
+    t = make_transcript([(0, "Opening line."), (5, f"{words}."), (40, f"{words}."), (59, f"{words}.")], duration=120)
+    out = audio_candidates(t, audio_with_burst(), CFG, [], "fp", 120.0)    # burst at 50-58 s: raw window is inside both long sentences
+    assert len(out) == 1
+    assert out[0].excerpt.startswith("word0") and out[0].excerpt.endswith("word38.")
+    assert (out[0].start, out[0].end) == (t.segments[2].start, t.segments[3].end)
+
+
+def test_widen_to_sentences_keeps_edges_between_sentences():
+    t = make_transcript([(0, "One two three."), (10, "Four five six seven.")], duration=30)
+    assert widen_to_sentences(t, 0.5, 11.0) == (0, t.segments[1].end), "edges inside sentences move out"
+    assert widen_to_sentences(t, 5.0, 7.0) == (5.0, 7.0), "the silence between sentences is left alone"
+    assert widen_to_sentences(t, 20.0, 25.0) == (20.0, 25.0)
+
+
+def test_audio_candidate_too_long_to_cut_cleanly_is_skipped():
+    words = " ".join(f"word{i}" for i in range(200))       # 90 s without a sentence end
+    t = make_transcript([(0, f"{words}.")], duration=120)
+    assert audio_candidates(t, audio_with_burst(), CFG, [], "fp", 120.0) == []
 
 
 # ---------------------------------------------------------------- merger
