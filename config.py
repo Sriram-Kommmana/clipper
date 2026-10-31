@@ -41,7 +41,8 @@ class PerformanceConfig(_Section):
 
 
 class TranscriptionConfig(_Section):
-    model: str = "small"
+    transcript_file: str | None = None
+    model: str = "large-v3-turbo"
     device: Literal["auto", "cuda", "cpu"] = "auto"
     compute_type: Literal["auto", "float16", "int8_float16", "int8", "float32"] = "auto"
     language: str | None = None
@@ -101,12 +102,12 @@ class BoundariesConfig(_Section):
 
 class SelectionConfig(_Section):
     min_duration_s: float = Field(15, gt=1)
-    max_duration_s: float = Field(60, gt=1)
-    target_duration_s: float = Field(40, gt=1)
+    max_duration_s: float = Field(90, gt=1)
+    target_duration_s: float = Field(45, gt=1)
     overflow_tolerance: float = Field(1.2, ge=1.0, le=2.0)
     max_clips: int = Field(10, ge=1, le=100)
     min_score: float = Field(45, ge=0, le=100)
-    min_separation_s: float = Field(15, ge=0)
+    min_separation_s: float = Field(5, ge=0)
     diversity_penalty: float = Field(6, ge=0, le=50)
     category_preferences: dict[str, float] = Field(default_factory=dict)
 

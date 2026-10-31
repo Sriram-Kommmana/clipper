@@ -69,9 +69,9 @@ def rep(vram_mb=None, cuda=0, ram=16.0, ollama=True, models=("qwen3:4b",)):
 
 def test_recommendations_for_target_hardware():
     r = recommend(rep(6144, 1))
-    assert (r["whisper_model"], r["whisper_device"], r["llm_model"], r["performance_mode"]) == ("small", "cuda", "qwen3:4b", "normal")
+    assert (r["whisper_model"], r["whisper_device"], r["llm_model"], r["performance_mode"]) == ("large-v3-turbo", "cuda", "qwen3:4b", "normal")
     assert not r["notes"] or "6 GB" in r["notes"][0]
-    assert any("medium" in n for n in recommend(rep(8192, 1))["notes"])
+    assert any("qwen3:8b" in n for n in recommend(rep(8192, 1))["notes"])
     small = recommend(rep(3072, 1))
     assert small["llm_model"] == "qwen3:1.7b"
     cpu = recommend(rep(None, 0, ram=8, ollama=False))

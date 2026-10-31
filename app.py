@@ -56,6 +56,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         overrides.setdefault("llm", {})["model"] = args.model
     if args.whisper:
         overrides.setdefault("transcription", {})["model"] = args.whisper
+    if args.transcript:
+        overrides.setdefault("transcription", {})["transcript_file"] = args.transcript
+    if args.language:
+        overrides.setdefault("transcription", {})["language"] = args.language
     if args.perf:
         overrides.setdefault("performance", {})["mode"] = args.perf
     if args.layout:
@@ -125,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--no-llm", action="store_true", help="heuristic mode without Ollama")
     run.add_argument("--model", help="Ollama model, e.g. qwen3:4b")
     run.add_argument("--whisper", help="Whisper model size")
+    run.add_argument("--transcript", metavar="FILE", help="use this .srt/.vtt instead of running Whisper")
+    run.add_argument("--language", help="spoken language code, e.g. hi (default: auto-detect)")
     run.add_argument("--perf", choices=["normal", "low"])
     run.add_argument("--layout", choices=["blur", "smart_crop", "original"])
     run.add_argument("--max-clips", type=int)

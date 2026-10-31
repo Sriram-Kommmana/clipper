@@ -17,8 +17,8 @@ from typing import Any
 def register_nvidia_dll_dirs() -> list[str]:
     """Windows: make pip-installed CUDA libs (nvidia-cublas-cu12, nvidia-cudnn-cu12) discoverable.
 
-    faster-whisper/CTranslate2 needs cuBLAS 12 and cuDNN 9 DLLs; `pip install nvidia-cublas-cu12
-    nvidia-cudnn-cu12` places them under site-packages/nvidia/*/bin which is not on the DLL search path.
+    faster-whisper/CTranslate2 needs cuBLAS 12 DLLs; `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` places
+    them under site-packages/nvidia/*/bin, which is not on the DLL search path. Ollama's copy is also used if present.
     """
     added: list[str] = []
     if os.name != "nt":
@@ -26,20 +26,30 @@ def register_nvidia_dll_dirs() -> list[str]:
     import site
 
     roots = set(site.getsitepackages() + [site.getusersitepackages()])
+    candidates: list[str] = []
     for root in roots:
         nv = os.path.join(root, "nvidia")
-        if not os.path.isdir(nv):
-            continue
-        for sub in os.listdir(nv):
-            b = os.path.join(nv, sub, "bin")
-            if os.path.isdir(b):
-                try:
-                    os.add_dll_directory(b)
-                    os.environ["PATH"] = b + os.pathsep + os.environ.get("PATH", "")
-                    added.append(b)
-                except OSError:
-                    pass
+        if os.path.isdir(nv):
+            candidates += [os.path.join(nv, sub, "bin") for sub in os.listdir(nv)]
+    candidates += _ollama_cuda_dirs()
+    for b in candidates:
+        if os.path.isdir(b):
+            try:
+                os.add_dll_directory(b)
+                os.environ["PATH"] = b + os.pathsep + os.environ.get("PATH", "")
+                added.append(b)
+            except OSError:
+                pass
     return added
+
+
+def _ollama_cuda_dirs() -> list[str]:
+    """Ollama for Windows ships the CUDA 12 runtime; using it avoids a separate download of more than 1 GB."""
+    exe = shutil.which("ollama")
+    roots = [os.path.dirname(exe)] if exe else []
+    if os.environ.get("LOCALAPPDATA"):
+        roots.append(os.path.join(os.environ["LOCALAPPDATA"], "Programs", "Ollama"))
+    return [os.path.join(r, "lib", "ollama", "cuda_v12") for r in dict.fromkeys(roots)]
 
 
 def _run(cmd: list[str], timeout: float = 10) -> str | None:
@@ -157,11 +167,11 @@ def recommend(report: dict[str, Any]) -> dict[str, Any]:
 
     rec: dict[str, Any] = {"notes": notes}
     if cuda_ok and vram_gb >= 5.5:
-        rec.update(whisper_model="small", whisper_device="cuda", whisper_compute="float16", llm_model="qwen3:4b")
+        rec.update(whisper_model="large-v3-turbo", whisper_device="cuda", whisper_compute="float16", llm_model="qwen3:4b")
         if vram_gb >= 7.5:
-            notes.append("8 GB VRAM: 'medium' Whisper (int8_float16) and qwen3:8b are possible; models run one at a time.")
+            notes.append("8 GB VRAM: qwen3:8b also fits fully on the GPU; models run one at a time.")
         else:
-            notes.append("6 GB VRAM: keep Whisper 'small' and qwen3:4b. Models are never loaded together, so this fits.")
+            notes.append("6 GB VRAM: Whisper 'large-v3-turbo' and qwen3:4b fit. Models are never loaded together. qwen3:8b works but spills onto the CPU.")
     elif cuda_ok and vram_gb >= 3.5:
         rec.update(whisper_model="base", whisper_device="cuda", whisper_compute="int8_float16", llm_model="qwen3:1.7b")
         notes.append("Limited VRAM: using smaller models.")

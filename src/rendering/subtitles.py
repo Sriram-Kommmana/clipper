@@ -11,7 +11,7 @@ from config import SubtitlesConfig
 from src.core.models import SubtitleLine, SubtitleWord
 from src.transcription.transcript_models import Transcript, srt_time
 
-_SENT_END = re.compile(r"[.!?…。！？]+[\"')\]]*$")
+_SENT_END = re.compile(r"[.!?…。！？।॥]+[\"')\]]*$")
 _COMMA = re.compile(r"[,;:，、]$")
 _EDIT_LINE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\|\s*(.*?)\s*$")
 MIN_EVENT_S = 0.04

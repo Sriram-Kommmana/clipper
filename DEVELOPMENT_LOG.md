@@ -113,6 +113,17 @@ no Ollama, Hugging Face/Ollama hosts blocked) — not on the target Windows lapt
 * Headless runs write `logs/clipper.log`. The 2 faulty tests are fixed.
 * Tests: **147 passed**.
 
+## Milestone 12 — clip quality after the first real user video
+* A 20-minute Hindi and English interview gave poor clips. Cause: Whisper `small` produced largely garbled Devanagari (average word confidence 58 %, 34 % of words below 50 %) and took 51 minutes on CPU because `cublas64_12.dll` was missing.
+* GPU: Ollama ships that DLL in `lib/ollama/cuda_v12`, so the app now uses Ollama's copy and Whisper runs on the GPU with no extra download.
+* Added: `.srt`/`.vtt` import (`--transcript`, or the first tab), a low-confidence warning, and `।` as a sentence end. Default Whisper model is now `large-v3-turbo`.
+* Language: turbo's auto-detect called this video English (62 %), which translates instead of transcribing. If confidence comes back low, the next most likely language is tried and the clearer transcript kept, with a project warning.
+* Moment finding: numbered ~10 s lines with a clock, a one-line video description as context, a richer description of what makes a clip work, no category anchoring, a rule against guessing speakers, and short moments extended instead of dropped. Defaults: max clip 90 s (was 60), target 45 s, minimum gap 5 s (was 15).
+* Stage details (language, confidence) are no longer overwritten by "Done".
+* Result on the English test video: 4 of 4 stories found, none dropped.
+* Result on the 20-minute Hindi video: transcription 51 min → 3.6 min, word confidence 58 % → 78 %, moments dropped 9 of 18 → 0 of 16, candidates 8 → 12, selected 1 → 6. Devanagari captions and the word highlight render correctly. Top score moved only from 54 to 57, parts of the transcript are still garbled, and nobody has yet judged the clips by watching them.
+* Tests: **166 passed**.
+
 ## Known bugs / limitations
 * Whisper on a GPU, `qwen3:4b` and smart crop on real faces are unverified (see ROADMAP `[~]`).
 * Transcription/LLM stages cannot resume mid-stage; a cancelled/failed stage restarts from its beginning.

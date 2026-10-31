@@ -6,8 +6,9 @@ import pytest
 from config import load_config
 from src.analysis.audio_analysis import analyze_rms
 from src.analysis.frame_extraction import VisualCheck
-from src.candidates.generator import (audio_candidates, candidate_id, first_sentence, generate_candidates, heuristic_candidates,
-                                      hook_is_quote, llm_candidates, make_sections, moment_to_candidate, widen_to_sentences)
+from src.candidates.generator import (BLOCK_MAX_S, audio_candidates, candidate_id, first_sentence, generate_candidates, heuristic_candidates,
+                                      hook_is_quote, llm_candidates, make_blocks, make_sections, moment_to_candidate, video_brief,
+                                      widen_to_sentences)
 from src.candidates.merger import merge_candidates, overlap_ratio
 from src.candidates.scorer import boundary_quality, compute_breakdown, format_fit, score_candidates, speech_density_score
 from src.candidates.selector import select_candidates
@@ -41,7 +42,7 @@ def test_sections_cover_transcript_with_overlap_and_limits():
     assert all(sum(len(x.text.split()) for x in s.segments) <= CFG.llm.section_max_words for s in secs)
     seen = {x.id for s in secs for x in s.segments}
     assert seen == {x.id for x in t.segments}, "every segment appears in at least one section"
-    assert secs[0].render().startswith("0: (5s) This is sentence number 0")
+    assert secs[0].render().startswith("0 [0:00] This is sentence number 0")
 
 
 def test_sections_word_cap_and_tiny_transcript():
@@ -61,6 +62,7 @@ def test_hook_verification():
     assert not hook_is_quote("a dragon appeared", ex)
     assert not hook_is_quote("", ex)
     assert first_sentence("Hello there. More text.") == "Hello there."
+    assert first_sentence("मैं वहाँ गया। फिर लौटा।") == "मैं वहाँ गया।"
 
 
 def test_moment_to_candidate_uses_transcript_not_model_text():
@@ -79,13 +81,51 @@ def test_moment_to_candidate_uses_transcript_not_model_text():
 def test_moment_drops():
     t = long_transcript(5)
     sec = make_sections(t, CFG.llm)[0]
-    assert moment_to_candidate(RawMoment(**moment(8, 8)), sec, t, CFG, "fp")[0] is None        # too short (one line)
     assert moment_to_candidate(RawMoment(**moment(0, 46)), sec, t, CFG, "fp")[0] is None       # way too long
     assert moment_to_candidate(RawMoment(**moment(500, 520)), sec, t, CFG, "fp")[0] is None    # outside section
     assert moment_to_candidate(RawMoment(**moment(9, 4)), sec, t, CFG, "fp")[0] is None        # reversed range
     c, _ = moment_to_candidate(RawMoment(**moment(-5, 4)), sec, t, CFG, "fp")
     assert c.start == 0, "lines are clamped into the section"
-    assert c.end == sec.segments[4].end, "the clip ends with its last line"
+    assert c.end == sec.blocks[4].end, "the clip ends with its last line"
+
+
+def test_short_moment_is_extended_forward_not_dropped():
+    t = long_transcript(5)
+    sec = make_sections(t, CFG.llm)[0]
+    c, why = moment_to_candidate(RawMoment(**moment(8, 8)), sec, t, CFG, "fp")
+    assert why is None and c.start == sec.blocks[8].start, "the chosen line stays the opening"
+    assert c.duration >= CFG.selection.min_duration_s and any("extended" in w for w in c.warnings)
+    tail, _ = moment_to_candidate(RawMoment(**moment(len(sec.blocks) - 1, len(sec.blocks) - 1)), sec, t, CFG, "fp")
+    assert tail.duration >= CFG.selection.min_duration_s and tail.end == sec.blocks[-1].end, "at the end it grows backwards"
+
+
+def test_blocks_group_segments_at_sentence_edges():
+    segs = make_transcript([(0, "One two three"), (2, "four five six."), (4, "seven eight nine."), (8, "ten eleven twelve।"), (30, "alone")]).segments
+    blocks = make_blocks(segs)
+    assert blocks[0].text == "One two three four five six. seven eight nine. ten eleven twelve।", "a Hindi danda also ends a sentence"
+    assert blocks[-1].text == "alone" and blocks[0].end == segs[3].end
+    overlong = make_transcript([(i * 3.0, f"words without an end {i}") for i in range(10)]).segments
+    assert all(b.end - b.start <= BLOCK_MAX_S + 3 for b in make_blocks(overlong)), "no sentence end still gives bounded lines"
+
+
+def test_video_brief_uses_title_and_survives_failure():
+    t = long_transcript(5)
+    llm = ScriptedLLM([json.dumps({"summary": "A talk about topics."})])
+    assert video_brief(t, llm, "My Great Talk") == "A talk about topics."
+    assert "My Great Talk" in llm.calls[0][1] and "sentence number" in llm.calls[0][1]
+    assert video_brief(t, ScriptedLLM(["junk"])) == ""
+
+
+def test_prompts_receive_the_video_brief():
+    t = long_transcript(5)
+
+    def respond(system, prompt):
+        return json.dumps({"summary": "BRIEF TEXT"}) if "File name:" in prompt else json.dumps({"moments": [moment(2, 5)]})
+
+    llm = ScriptedLLM(respond)
+    _, stats = llm_candidates(t, CFG, llm, "fp", title="Talk")
+    assert stats["video_brief"] == "BRIEF TEXT"
+    assert any("About this video: BRIEF TEXT" in prompt for _, prompt in llm.calls)
 
 
 # ---------------------------------------------------------------- LLM generation
@@ -100,21 +140,21 @@ def test_llm_generation_merges_duplicates_across_sections():
         for i, s in enumerate(secs):
             if f"({s.start:.0f}s - {s.end:.0f}s)" in prompt:
                 if s.start <= boundary and boundary + 35 <= s.end:
-                    first = next(n for n, seg in enumerate(s.segments) if seg.start >= boundary)
-                    return json.dumps({"moments": [moment(first + (i % 2), first + 6 - (i % 2))]})
-        return json.dumps({"moments": []})
+                    first = next(n for n, b in enumerate(s.blocks) if b.start >= boundary)
+                    return json.dumps({"moments": [moment(first + (i % 2), first + 3 - (i % 2))]})
+        return json.dumps({"summary": "A talk."}) if "File name:" in prompt else json.dumps({"moments": []})
 
     llm = ScriptedLLM(respond)
     cands, stats = generate_candidates(t, None, CFG, llm, "fp", t.duration)
     assert stats["sections"] == len(secs) and stats["raw_moments"] >= 2
     assert len(cands) == 1 and stats["merged"] >= 1 and cands[0].merged_from
-    assert len(llm.calls) == len(secs)
+    assert len(llm.calls) == len(secs) + 1, "one call per section, plus the video brief"
 
 
 def test_llm_generation_survives_bad_section_but_not_all():
     t = long_transcript(30)
     n = len(make_sections(t, CFG.llm))
-    seq = ["garbage"] * 3 + [json.dumps({"moments": [moment(10, 15)]})] * 50
+    seq = [json.dumps({"summary": "A talk."})] + ["garbage"] * 3 + [json.dumps({"moments": [moment(10, 15)]})] * 50
     cands, stats = llm_candidates(t, CFG, ScriptedLLM(seq), "fp")
     assert stats["failed_sections"] == [0] and stats["sections"] == n
     with pytest.raises(LLMOutputError):
@@ -168,7 +208,7 @@ def test_widen_to_sentences_keeps_edges_between_sentences():
 
 
 def test_audio_candidate_too_long_to_cut_cleanly_is_skipped():
-    words = " ".join(f"word{i}" for i in range(200))       # 90 s without a sentence end
+    words = " ".join(f"word{i}" for i in range(240))       # 108 s without a sentence end
     t = make_transcript([(0, f"{words}.")], duration=120)
     assert audio_candidates(t, audio_with_burst(), CFG, [], "fp", 120.0) == []
 
@@ -209,7 +249,7 @@ def test_check_bounds(s, e, ok):
 
 def test_manual_bounds_limits_and_warnings():
     assert validate_manual_bounds(0, 40, 100, LIM) == []
-    assert any("Longer" in w for w in validate_manual_bounds(0, 75, 100, LIM))
+    assert any("Longer" in w for w in validate_manual_bounds(0, 95, 100, LIM))
     assert any("Shorter" in w for w in validate_manual_bounds(0, 8, 100, LIM))
     with pytest.raises(CandidateValidationError, match="at least"):
         validate_manual_bounds(0, 1, 100, LIM)
@@ -277,8 +317,8 @@ def test_hard_failures():
 def test_format_fit_curve():
     s = CFG.selection
     f = lambda d: format_fit(d, s.target_duration_s, s.min_duration_s, s.max_duration_s)
-    assert f(40) == pytest.approx(100)
-    assert 40 <= f(15) <= 60 and 40 <= f(60) <= 60
+    assert f(45) == pytest.approx(100)
+    assert 55 <= f(15) <= 70 and 30 <= f(90) <= 40
     assert f(10) <= 40 and f(100) <= 40 and f(100) >= 0
     assert f(35) > f(25) > f(18)
 
@@ -366,7 +406,8 @@ def test_selector_filters_and_limits():
 
 def test_selector_separation_and_overlap():
     cands = [cand("a", 0, 30, score=90), cand("b", 35, 65, score=85), cand("c", 20, 50, score=80), cand("d", 100, 130, score=60)]
-    out = {c.id: c for c in select_candidates(cands, SEL)}                    # min_separation 15
+    strict = SEL.model_copy(update={"min_separation_s": 15})
+    out = {c.id: c for c in select_candidates(cands, strict)}
     assert out["a"].selected and out["d"].selected
     assert not out["b"].selected and "too close" in out["b"].filter_reason
     assert not out["c"].selected

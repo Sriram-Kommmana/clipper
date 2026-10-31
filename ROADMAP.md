@@ -9,7 +9,7 @@ Legend: `[x]` implemented **and** exercised by tests or a real run in the dev sa
 
 ## Phase 2 — Minimum end-to-end pipeline
 - [x] Ingestion: probe, validation, rotation, no-audio/corrupt detection, content fingerprint
-- [~] Transcription (faster-whisper, word timestamps, JSON+SRT, device/compute plan, OOM→CPU fallback) — real inference run on CPU; **GPU inference not run** (cuBLAS missing, fell back to CPU as designed)
+- [x] Transcription (faster-whisper, word timestamps, JSON+SRT, device/compute plan, OOM→CPU fallback, language retry) — real inference run on the GPU and CPU; or import a timed `.srt`/`.vtt`
 - [~] Ollama client + structured output + retries — run with real `qwen3:latest` (8.2B); **`qwen3:4b` not run**
 - [x] Narrative candidate generation (sections, verification against transcript, merge)
 - [x] Accurate one-pass FFmpeg cut + captions + 9:16 render (audio onset accuracy and caption sync measured)
@@ -41,7 +41,7 @@ Legend: `[x]` implemented **and** exercised by tests or a real run in the dev sa
 - [x] Unit tests (137 passing incl. real FFmpeg renders)
 - [x] Integration tests on a generated MP4 with fake Whisper/scripted LLM
 - [x] Zero-paid-API audit (static test + observed: no outbound connection attempts during UI/pipeline runs)
-- [~] Real pipeline with real models on Windows — run on a text-to-speech test video; **real footage still to try**
+- [~] Real pipeline with real models on Windows — run on a real 20-minute Hindi and English interview; **clips still to be judged by a person**
 - [~] Windows install check — existing venv and `scripts/check_environment.py` run on Windows 11 / Python 3.10; `setup_windows.bat` itself not run
 
 ## Phase 7 — Finalisation
@@ -49,4 +49,4 @@ Legend: `[x]` implemented **and** exercised by tests or a real run in the dev sa
 - [x] Development log kept per milestone
 
 ## Ideas not started
-Speaker diarisation · local VLM visual validation · feedback loop from rejected clips · batch of several videos · mid-stage checkpointing
+Hinglish-tuned Whisper models (need conversion to CTranslate2) · feedback loop from rejected clips (learning from examples moved results most in published research) · speaker diarisation · local VLM visual validation · batch of several videos · mid-stage checkpointing

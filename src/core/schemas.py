@@ -38,6 +38,15 @@ class MomentList(BaseModel):
     moments: list[RawMoment] = Field(default_factory=list, max_length=20)
 
 
+class VideoBrief(BaseModel):
+    summary: str = Field(max_length=600)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _tidy(cls, v: Any) -> str:
+        return _clean(v if v is not None else "", 600)
+
+
 class RawScore(BaseModel):
     id: str
     hook: int = Field(ge=1, le=10)

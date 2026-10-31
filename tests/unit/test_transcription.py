@@ -1,3 +1,4 @@
+from pathlib import Path
 
 import pytest
 
@@ -121,6 +122,43 @@ def test_backend_plan_without_cuda(monkeypatch):
     forced = FasterWhisperBackend(load_config(overrides={"transcription": {"device": "cuda"}}, local_path=None), 2)
     plan = forced._plan()
     assert all(d == "cpu" for d, _ in plan) and forced.fallback_note, "must tell the user CUDA was unavailable"
+
+
+def _transcript_with(language, prob):
+    return Transcript(language=language, model="m", segments=[TranscriptSegment(id=0, start=0, end=1, text="a", words=[Word(text="a", start=0, end=1, prob=prob)])])
+
+
+@pytest.mark.parametrize("first_prob,second_prob,expected,attempts", [
+    (0.50, 0.84, "hi", 2),      # misdetected: the other language is clearly better, and the user is told
+    (0.50, 0.40, "en", 2),      # the other language is no better: keep the first
+    (0.90, 0.99, "en", 1),      # confident first result: no second run
+])
+def test_low_confidence_retries_the_next_language(monkeypatch, first_prob, second_prob, expected, attempts):
+    be = FasterWhisperBackend(load_config(local_path=None), 2)
+    calls = []
+
+    def run(wav, language, duration, on_progress, cancel):
+        calls.append(language)
+        if language is None:
+            be._language_probs = [("en", 0.85), ("hi", 0.09), ("ur", 0.01)]
+            return _transcript_with("en", first_prob)
+        return _transcript_with(language, second_prob)
+
+    monkeypatch.setattr(be, "_load", lambda: None)
+    monkeypatch.setattr(be, "_run", run)
+    out = be.transcribe(Path("x.wav"), language=None, duration=1, on_progress=None, cancel=None)
+    assert out.language == expected and len(calls) == attempts
+    assert calls[1:] == (["hi"] if attempts == 2 else [])
+    assert bool(be.fallback_note) == (expected == "hi")
+
+
+def test_chosen_language_is_never_second_guessed(monkeypatch):
+    be = FasterWhisperBackend(load_config(local_path=None), 2)
+    calls = []
+    monkeypatch.setattr(be, "_load", lambda: None)
+    monkeypatch.setattr(be, "_run", lambda w, language, *a: calls.append(language) or _transcript_with(language, 0.3))
+    assert be.transcribe(Path("x.wav"), language="hi", duration=1, on_progress=None, cancel=None).language == "hi"
+    assert calls == ["hi"]
 
 
 def test_backend_missing_model_gives_actionable_error():

@@ -16,7 +16,7 @@ from src.utils.hardware_detection import build_report, format_report
 
 log = logging.getLogger(__name__)
 
-WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v2"]
+WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3", "large-v3-turbo"]
 LLM_MODELS = ["qwen3:4b", "qwen3:1.7b", "qwen3:8b"]
 RES_PRESETS = {"1080 × 1920 (full quality)": (1080, 1920), "720 × 1280 (faster)": (720, 1280)}
 
@@ -55,7 +55,8 @@ def collect_overrides(v: dict[str, Any]) -> dict[str, Any]:
     w, h = RES_PRESETS.get(v["resolution"], (1080, 1920))
     pw, ph = (540, 960) if w == 1080 else (360, 640)
     return {
-        "transcription": {"model": v["whisper"], "device": v["device"], "language": (v["language"] or "").strip() or None},
+        "transcription": {"model": v["whisper"], "device": v["device"], "language": (v["language"] or "").strip() or None,
+                          "transcript_file": v.get("transcript") or None},
         "llm": {"model": (v["llm_model"] or "qwen3:4b").strip(), "use_llm": bool(v["use_llm"])},
         "performance": {"mode": v["perf"]},
         "selection": {"min_duration_s": v["min_d"], "target_duration_s": v["target_d"], "max_duration_s": v["max_d"],
@@ -87,6 +88,8 @@ def build_ui(wb: Workbench) -> gr.Blocks:
                         path_tb = gr.Textbox(label="Video file (path on this computer)", placeholder=r"C:\Videos\podcast.mp4",
                                              info="MP4, MOV or MKV. Tip: shift+right-click the file in Explorer → Copy as path.")
                         upload = gr.File(label="…or pick a file", file_count="single", type="filepath", file_types=[".mp4", ".mov", ".mkv"], height=90)
+                        transcript_up = gr.File(label="Transcript (optional): skips Whisper. Must be .srt or .vtt, with timestamps", file_count="single",
+                                                type="filepath", file_types=[".srt", ".vtt"], height=90)
                         out_tb = gr.Textbox(label="Output folder (projects are stored here)", value=str(wb.cfg.paths.projects_dir))
                         with gr.Row():
                             inspect_btn = gr.Button("🔍 Inspect & open project", variant="primary")
@@ -96,12 +99,13 @@ def build_ui(wb: Workbench) -> gr.Blocks:
                     with gr.Column(scale=2):
                         with gr.Accordion("Settings", open=True):
                             with gr.Row():
-                                whisper_dd = gr.Dropdown(WHISPER_MODELS, value=wb.cfg.transcription.model, label="Whisper model", info="small fits 6 GB VRAM")
+                                whisper_dd = gr.Dropdown(WHISPER_MODELS, value=wb.cfg.transcription.model, label="Whisper model", info="large-v3-turbo fits 6 GB VRAM")
                                 device_dd = gr.Dropdown(["auto", "cuda", "cpu"], value=wb.cfg.transcription.device, label="Device")
                             with gr.Row():
                                 llm_dd = gr.Dropdown(LLM_MODELS, value=wb.cfg.llm.model, allow_custom_value=True, label="Ollama model")
                                 use_llm_cb = gr.Checkbox(value=wb.cfg.llm.use_llm, label="Use local LLM", info="Off = rough heuristic mode")
-                            lang_tb = gr.Textbox(label="Spoken language (blank = auto-detect)", value=wb.cfg.transcription.language or "", max_lines=1)
+                            lang_tb = gr.Textbox(label="Spoken language (blank = auto-detect)", value=wb.cfg.transcription.language or "", max_lines=1,
+                                                 info="Type hi for Hindi or mixed Hindi-English: it is faster, because auto-detect can mistake it for English and need a second attempt")
                             perf_rd = gr.Radio(["normal", "low"], value=wb.cfg.performance.mode, label="Performance mode", info="low = fewer threads, smaller contexts, lower priority (slower)")
                             with gr.Row():
                                 min_d = gr.Slider(5, 60, value=wb.cfg.selection.min_duration_s, step=1, label="Min length (s)")
@@ -188,9 +192,9 @@ def build_ui(wb: Workbench) -> gr.Blocks:
 
         # ================================================================ handlers
         setting_inputs = [whisper_dd, device_dd, lang_tb, llm_dd, use_llm_cb, perf_rd, min_d, target_d, max_d, max_clips, min_score,
-                          separation, layout_dd, res_dd, hw_dd, subs_on, subs_mode, sub_pos, font_size, hi_color]
+                          separation, layout_dd, res_dd, hw_dd, subs_on, subs_mode, sub_pos, font_size, hi_color, transcript_up]
         keys = ["whisper", "device", "language", "llm_model", "use_llm", "perf", "min_d", "target_d", "max_d", "max_clips", "min_score",
-                "separation", "layout", "resolution", "hw", "subs_on", "subs_mode", "sub_pos", "font_size", "hi_color"]
+                "separation", "layout", "resolution", "hw", "subs_on", "subs_mode", "sub_pos", "font_size", "hi_color", "transcript"]
 
         @guard
         def apply_settings(*vals):
