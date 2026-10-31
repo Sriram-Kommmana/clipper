@@ -81,6 +81,15 @@ is from reading the actual source (≈3.9k lines of Python), not just the README
   but it would compete for VRAM; "feedback loop from rejected clips" (reference's own TODO); direct upload
   to social platforms (network + account concerns).
 
+## 6a. Clip-quality research (2026-10-31)
+
+Ideas only; no code or prompt text was copied. Licences were read from the GitHub API (both MIT).
+
+* **`artbyjazi/autoclip`:** tags transcript positions so the model copies an index instead of deriving a time; overlapping windows; keeps the highest-scoring of overlapping candidates.
+* **`Anil-matcha/AI-Youtube-Shorts-Generator`:** classifies the video's type first and passes that to later prompts; lists what makes a clip work; asks for more candidates than needed; allows longer clips when a story needs them.
+* **Rhapsody paper (arXiv 2505.19429):** predicts YouTube replay peaks. Zero-shot LLMs were only modestly above random (Gemini text-only hit rate 0.327 against 0.220 random); a fine-tuned small model reached 0.452, and audio added about 0.025-0.04 on top. So the transcript matters most, audio helps a little, and a zero-shot LLM is a shortlist rather than an oracle. Learning from labelled examples is what moved the numbers most.
+* **Hinglish speech recognition:** on its own benchmark, `Trelis/whisper-hinglish-preview` reports 13.67 % WER on conversational code-switching against 29.74 % for plain `whisper-large-v3` (vendor numbers, research preview). Neither it nor `Oriserve/Whisper-Hindi2Hinglish-Prime` ships CTranslate2 weights, so using them here needs a conversion step and a 6 GB download.
+
 ## 7. Caveats about this analysis
 
 * It reflects the repository at the commit above; behaviour I describe was read from code, not executed

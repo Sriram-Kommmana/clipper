@@ -137,15 +137,20 @@ def analyze_rms(rms: np.ndarray, duration: float, cfg: AudioConfig, raw: dict[st
     min_sil = max(1, int(round(cfg.min_silence_s / w)))
     out.silences = [Interval(start=a * w, end=b * w) for a, b in _runs(db < sil_thr) if b - a >= min_sil]
 
+    # "Loud" means above the recording's typical level: speech alone already sits high on the energy scale
+    active = db >= sil_thr
+    typical = float(np.median(db[active] if active.mean() >= 0.5 else db))
+    loud = (typical + cfg.loud_margin_db - floor) / span
+
     events: list[AudioEvent] = []
     # isolated peaks
     dist = max(1, int(2.0 / w))
     # (raw energy, not smoothed: a half-second shout or crash is a legitimate peak)
-    idx, _ = find_peaks(energy, height=0.6, prominence=cfg.peak_prominence, distance=dist)
+    idx, _ = find_peaks(energy, height=max(0.6, loud), prominence=cfg.peak_prominence, distance=dist)
     for i in idx:
         events.append(AudioEvent(start=i * w, end=(i + 1) * w, kind="peak", strength=float(energy[i])))
     # sustained high energy (bridge 1-window gaps)
-    high = smooth >= cfg.sustained_threshold
+    high = smooth >= max(cfg.sustained_threshold, loud)
     closed = np.convolve(high.astype(int), np.ones(3, dtype=int), "same") >= 2 if high.any() else high
     min_len = max(1, int(round(cfg.sustained_min_s / w)))
     for a, b in _runs(closed | high):

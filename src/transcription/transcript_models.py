@@ -6,7 +6,7 @@ import re
 
 from pydantic import BaseModel, Field
 
-_SENTENCE_END = re.compile(r"[.!?…。！？]+[\"')\]]*$")
+_SENTENCE_END = re.compile(r"[.!?…。！？।॥]+[\"')\]]*$")
 
 
 class Word(BaseModel):
@@ -88,6 +88,11 @@ class Transcript(BaseModel):
             elif s.ends_sentence:
                 ends.append(s.end)
         return ends
+
+    def mean_word_confidence(self) -> float | None:
+        """Recogniser's average word probability; None when it has no word-level confidence (imported text)."""
+        probs = [w.prob for w in self.words()]
+        return sum(probs) / len(probs) if probs and self.model != "imported" else None
 
     def speech_coverage(self, start: float, end: float) -> float:
         """Fraction of [start, end] covered by transcript segments (0-1)."""

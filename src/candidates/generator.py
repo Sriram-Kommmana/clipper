@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import logging
 import re
@@ -21,16 +22,46 @@ from src.analysis.audio_analysis import AudioAnalysis
 from src.candidates.merger import merge_candidates
 from src.core.exceptions import LLMOutputError
 from src.core.models import Candidate
-from src.core.schemas import MomentList, RawMoment
+from src.core.schemas import MomentList, RawMoment, VideoBrief
 from src.llm.ollama_client import LLMClient
 from src.llm.output_parser import structured_call
-from src.llm.prompts import moment_prompt
+from src.llm.prompts import brief_prompt, moment_prompt
 from src.transcription.transcript_models import Transcript, TranscriptSegment
 
 log = logging.getLogger(__name__)
 
 MAX_MOMENTS_PER_SECTION = 6
 MAX_AUDIO_CANDIDATES = 8
+BLOCK_MIN_S = 7.0
+BLOCK_MAX_S = 14.0
+BRIEF_SAMPLE_CHARS = 1500
+
+
+@dataclass
+class Block:
+    """A numbered transcript line as the model sees it: a few recogniser segments, ending at a sentence edge if possible."""
+    start: float
+    end: float
+    text: str
+
+
+def make_blocks(segments: list[TranscriptSegment]) -> list[Block]:
+    """Group segments into ~10 s lines. Whisper's 2-3 s segments tempt the model into picking a single short line."""
+    blocks: list[Block] = []
+    cur: list[TranscriptSegment] = []
+    for seg in segments:
+        cur.append(seg)
+        dur = seg.end - cur[0].start
+        if dur >= BLOCK_MAX_S or (dur >= BLOCK_MIN_S and seg.ends_sentence):
+            blocks.append(Block(cur[0].start, seg.end, " ".join(s.text.strip() for s in cur)))
+            cur = []
+    if cur:
+        blocks.append(Block(cur[0].start, cur[-1].end, " ".join(s.text.strip() for s in cur)))
+    return blocks
+
+
+def clock(t: float) -> str:
+    return f"{int(t // 60)}:{int(t % 60):02d}"
 
 
 @dataclass
@@ -40,8 +71,11 @@ class Section:
     end: float
     segments: list[TranscriptSegment]
 
+    def __post_init__(self) -> None:
+        self.blocks = make_blocks(self.segments)
+
     def render(self) -> str:
-        return "\n".join(f"[{s.start:.1f}-{s.end:.1f}] {s.text.strip()}" for s in self.segments if s.text.strip())
+        return "\n".join(f"{i} [{clock(b.start)}] {b.text}" for i, b in enumerate(self.blocks))
 
 
 def candidate_id(fingerprint: str, start: float, end: float, category: str) -> str:
@@ -86,7 +120,7 @@ def hook_is_quote(hook: str, excerpt: str) -> bool:
 
 
 def first_sentence(text: str, max_words: int = 25) -> str:
-    m = re.match(r"(.+?[.!?…])(\s|$)", text.strip())
+    m = re.match(r"(.+?[.!?…।॥])(\s|$)", text.strip())
     sent = m.group(1) if m else text.strip()
     return " ".join(sent.split()[:max_words])
 
@@ -94,9 +128,20 @@ def first_sentence(text: str, max_words: int = 25) -> str:
 def moment_to_candidate(m: RawMoment, sec: Section, transcript: Transcript, cfg: AppConfig, fingerprint: str) -> tuple[Candidate | None, str | None]:
     """Validate/repair one LLM moment. Returns (candidate, None) or (None, reason_dropped)."""
     sel = cfg.selection
-    start, end = max(sec.start, m.start), min(sec.end, m.end)
-    if not (end > start):
-        return None, "end <= start after clamping to the section"
+    blocks = sec.blocks
+    first, last = max(0, m.first_line), min(len(blocks) - 1, m.last_line)
+    if last < first:
+        return None, f"lines {m.first_line}-{m.last_line} are not a valid range in this section"
+    warnings: list[str] = []
+    if blocks[last].end - blocks[first].start < sel.min_duration_s:
+        # The model found the moment but marked too little of it. The line it chose is usually the opening, so keep reading forward.
+        while blocks[last].end - blocks[first].start < sel.min_duration_s and (last < len(blocks) - 1 or first > 0):
+            if last < len(blocks) - 1:
+                last += 1
+            else:
+                first -= 1
+        warnings.append("The model marked a very short moment, so it was extended to the minimum length; check that the ending lands.")
+    start, end = blocks[first].start, blocks[last].end
     dur = end - start
     if dur < sel.min_duration_s * 0.5:
         return None, f"too short ({dur:.0f}s)"
@@ -105,7 +150,6 @@ def moment_to_candidate(m: RawMoment, sec: Section, transcript: Transcript, cfg:
     excerpt = transcript.text_in_range(start, end)
     if not excerpt:
         return None, "no transcript text in range"
-    warnings: list[str] = []
     hook = m.hook
     if not hook_is_quote(hook, excerpt):
         hook = first_sentence(excerpt)
@@ -118,19 +162,36 @@ def moment_to_candidate(m: RawMoment, sec: Section, transcript: Transcript, cfg:
     ), None
 
 
+def video_brief(transcript: Transcript, llm: LLMClient, title: str = "", *, retries: int = 1, cancel: threading.Event | None = None) -> str:
+    """One short description of the video, given to later prompts. Optional: failure just means no extra context."""
+    segs = [s.text.strip() for s in transcript.segments if s.text.strip()]
+    third = max(1, len(segs) // 3)
+    sample = "\n...\n".join(" ".join(segs[i:i + third])[:BRIEF_SAMPLE_CHARS // 3] for i in range(0, len(segs), third))
+    p = brief_prompt(title, sample)
+    try:
+        brief, _ = structured_call(llm, p.system, p.user, VideoBrief, retries=retries, cancel=cancel)
+    except LLMOutputError as exc:
+        log.warning("Could not describe the video: %s", exc)
+        return ""
+    return brief.summary
+
+
 def llm_candidates(
     transcript: Transcript, cfg: AppConfig, llm: LLMClient, fingerprint: str,
-    *, cancel: threading.Event | None = None, on_progress: Callable[[float, str], None] | None = None,
+    *, cancel: threading.Event | None = None, on_progress: Callable[[float, str], None] | None = None, title: str = "",
 ) -> tuple[list[Candidate], dict]:
     sections = make_sections(transcript, cfg.effective().llm)
-    stats = {"sections": len(sections), "raw_moments": 0, "dropped": [], "failed_sections": [], "retries": 0}
+    stats = {"sections": len(sections), "raw_moments": 0, "dropped": [], "failed_sections": [], "retries": 0, "video_brief": ""}
     out: list[Candidate] = []
+    if on_progress:
+        on_progress(0.0, "Reading what the video is about")
+    context = stats["video_brief"] = video_brief(transcript, llm, title, cancel=cancel) if sections else ""
     for n, sec in enumerate(sections):
         if on_progress:
             on_progress(n / max(1, len(sections)), f"Finding moments: section {n + 1}/{len(sections)}")
         p = moment_prompt(
             transcript=sec.render(), a=sec.start, b=sec.end, language=transcript.language,
-            min_s=cfg.selection.min_duration_s, max_s=cfg.selection.max_duration_s, max_moments=MAX_MOMENTS_PER_SECTION,
+            min_s=cfg.selection.min_duration_s, max_s=cfg.selection.max_duration_s, max_moments=MAX_MOMENTS_PER_SECTION, context=context,
         )
         try:
             result, attempts = structured_call(llm, p.system, p.user, MomentList, retries=cfg.llm.max_retries, cancel=cancel)
@@ -152,6 +213,19 @@ def llm_candidates(
             recovery="Try a larger model (llm.model: qwen3:8b), lower llm.section_max_words, or set llm.use_llm: false for the heuristic fallback.",
         )
     return out, stats
+
+
+def widen_to_sentences(transcript: Transcript, start: float, end: float) -> tuple[float, float]:
+    """Move an edge that falls inside a sentence out to that sentence's edge. Edges between sentences stay put."""
+    starts, ends = transcript.sentence_starts(), transcript.sentence_ends()
+    prev_start = starts[bisect.bisect_right(starts, start) - 1] if bisect.bisect_right(starts, start) else None
+    prev_end = ends[bisect.bisect_right(ends, start) - 1] if bisect.bisect_right(ends, start) else None
+    if prev_start is not None and (prev_end is None or prev_start > prev_end):
+        start = prev_start
+    i, j = bisect.bisect_left(ends, end), bisect.bisect_left(starts, end)
+    if i < len(ends) and (j == len(starts) or ends[i] < starts[j]):
+        end = ends[i]
+    return start, end
 
 
 def audio_candidates(
@@ -180,6 +254,9 @@ def audio_candidates(
         end = min(source_duration, max(ev.end + 3.0, start + sel.min_duration_s))
         start = max(0.0, min(start, end - sel.min_duration_s))
         if end - start < sel.min_duration_s * 0.9:
+            continue
+        start, end = widen_to_sentences(transcript, start, end)
+        if end - start > sel.max_duration_s:    # no clean cut within the limit; these clips are only a supplement
             continue
         excerpt = transcript.text_in_range(start, end)
         warnings = ["Triggered by audio energy only - confirm in the preview that it is a real highlight."]
@@ -229,11 +306,11 @@ def heuristic_candidates(transcript: Transcript, audio: AudioAnalysis | None, cf
 
 def generate_candidates(
     transcript: Transcript, audio: AudioAnalysis | None, cfg: AppConfig, llm: LLMClient | None, fingerprint: str,
-    source_duration: float, *, cancel: threading.Event | None = None, on_progress: Callable[[float, str], None] | None = None,
+    source_duration: float, *, cancel: threading.Event | None = None, on_progress: Callable[[float, str], None] | None = None, title: str = "",
 ) -> tuple[list[Candidate], dict]:
     stats: dict = {"mode": "llm"}
     if cfg.llm.use_llm and llm is not None:
-        base, st = llm_candidates(transcript, cfg, llm, fingerprint, cancel=cancel, on_progress=on_progress)
+        base, st = llm_candidates(transcript, cfg, llm, fingerprint, cancel=cancel, on_progress=on_progress, title=title)
         stats.update(st)
     else:
         stats["mode"] = "heuristic"

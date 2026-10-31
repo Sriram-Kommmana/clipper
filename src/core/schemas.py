@@ -14,10 +14,13 @@ def _clean(s: Any, limit: int) -> str:
 
 
 class RawMoment(BaseModel):
-    start: float
-    end: float
-    category: Literal["story", "funny", "emotional", "surprising", "insight", "quote", "reaction"]
+    """Field order matters: constrained decoding fills fields in this order, so the model names the moment
+    before choosing its line range. Asked for seconds first, it copied the timestamps of a single line."""
+
     title: str = Field(max_length=120)
+    category: Literal["story", "funny", "emotional", "surprising", "insight", "quote", "reaction"]
+    first_line: int
+    last_line: int
     explanation: str = Field("", max_length=400)
     hook: str = Field("", max_length=300)
     caption: str = Field("", max_length=300)
@@ -33,6 +36,15 @@ class RawMoment(BaseModel):
 
 class MomentList(BaseModel):
     moments: list[RawMoment] = Field(default_factory=list, max_length=20)
+
+
+class VideoBrief(BaseModel):
+    summary: str = Field(max_length=600)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _tidy(cls, v: Any) -> str:
+        return _clean(v if v is not None else "", 600)
 
 
 class RawScore(BaseModel):
@@ -59,12 +71,14 @@ def json_schema_for(model: type[BaseModel]) -> dict[str, Any]:
     schema = model.model_json_schema()
     defs = schema.pop("$defs", {})
 
-    def inline(node: Any) -> Any:
+    def inline(node: Any, is_fields: bool = False) -> Any:
+        if is_fields:  # keys of "properties" are field names (one is literally "title"), not schema metadata
+            return {k: inline(v) for k, v in node.items()}
         if isinstance(node, dict):
             if "$ref" in node:
                 name = node["$ref"].split("/")[-1]
                 return inline(copy.deepcopy(defs[name]))
-            return {k: inline(v) for k, v in node.items() if k not in ("title", "default")}
+            return {k: inline(v, k == "properties") for k, v in node.items() if k not in ("title", "default")}
         if isinstance(node, list):
             return [inline(v) for v in node]
         return node

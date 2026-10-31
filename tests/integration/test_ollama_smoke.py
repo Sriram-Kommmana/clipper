@@ -16,7 +16,7 @@ def test_real_model_returns_valid_schema():
     cfg = load_config(local_path=None)
     client = OllamaClient(cfg.llm)
     client.ensure_ready()
-    transcript = "\n".join(f"[{i * 5.0:.1f}-{i * 5.0 + 4.5:.1f}] {t}" for i, t in enumerate([
+    transcript = "\n".join(f"{i}: (5s) {t}" for i, t in enumerate([
         "So last summer I decided to climb the mountain behind my house.", "I had no map and only one bottle of water.",
         "Halfway up a goat blocked the path and refused to move.", "I tried everything, shouting, clapping, even singing.",
         "Finally I offered it my sandwich and it walked right off.", "At the top I realised the goat had eaten my map too.",
@@ -25,5 +25,5 @@ def test_real_model_returns_valid_schema():
     result, attempts = structured_call(client, p.system, p.user, MomentList, retries=2)
     print(json.dumps(result.model_dump(), indent=2), "attempts:", attempts)
     for m in result.moments:
-        assert 0 <= m.start < m.end <= 35.5
+        assert 0 <= m.first_line < m.last_line <= 6
     client.unload()

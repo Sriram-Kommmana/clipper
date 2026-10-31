@@ -87,7 +87,7 @@ def _context(transcript: Transcript, c: Candidate) -> tuple[str, str]:
 
 def _llm_scores(
     cands: list[Candidate], transcript: Transcript, cfg: AppConfig, llm: LLMClient,
-    cancel: threading.Event | None, on_progress: Callable[[float, str], None] | None,
+    cancel: threading.Event | None, on_progress: Callable[[float, str], None] | None, context: str = "",
 ) -> dict[str, dict[str, float]]:
     """Batch LLM scoring; a failed batch just leaves its candidates unscored (never aborts the stage)."""
     out: dict[str, dict[str, float]] = {}
@@ -101,7 +101,7 @@ def _llm_scores(
             before, after = _context(transcript, c)
             blocks.append({"id": c.id, "duration": c.duration, "category": c.category,
                            "before": before or "(start of video)", "text": c.excerpt[:1800], "after": after or "(end of video)"})
-        p = score_prompt(blocks)
+        p = score_prompt(blocks, context)
         try:
             res, _ = structured_call(llm, p.system, p.user, ScoreList, retries=cfg.llm.max_retries, cancel=cancel)
         except LLMOutputError as exc:
@@ -147,10 +147,10 @@ def compute_breakdown(
 def score_candidates(
     cands: list[Candidate], transcript: Transcript, audio: AudioAnalysis | None, cfg: AppConfig, llm: LLMClient | None,
     *, visual_fn: Callable[[Candidate], VisualCheck] | None = None, cancel: threading.Event | None = None,
-    on_progress: Callable[[float, str], None] | None = None,
+    on_progress: Callable[[float, str], None] | None = None, context: str = "",
 ) -> list[Candidate]:
     """Returns new Candidates with `.scores` set. Visual checks run only for the best-looking ones (I/O cost)."""
-    llm_vals = _llm_scores(cands, transcript, cfg, llm, cancel, on_progress) if (llm and cfg.llm.use_llm and cands) else {}
+    llm_vals = _llm_scores(cands, transcript, cfg, llm, cancel, on_progress, context) if (llm and cfg.llm.use_llm and cands) else {}
     first = {c.id: compute_breakdown(c, llm_vals.get(c.id), transcript, audio, None, cfg) for c in cands}
     visuals: dict[str, VisualCheck] = {}
     if visual_fn:

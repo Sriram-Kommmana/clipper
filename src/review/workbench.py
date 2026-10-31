@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 STATUS_ICON = {"pending": "⏳ pending", "approved": "✅ approved", "rejected": "❌ rejected"}
 STAGE_ICON = {"pending": "·", "running": "⏳", "done": "✅", "failed": "❌", "cancelled": "⏹", "interrupted": "⚠", "skipped": "—"}
 TABLE_HEADERS = ["#", "ID", "Title", "Type", "Score", "Len", "Review", "Note"]
+IDLE_PROGRESS = {"running": False, "stage": "", "overall": 0.0, "message": "Idle", "report": None}
 
 
 class Busy(ClipperError):
@@ -47,12 +48,12 @@ class Workbench:
         self._log_handler: logging.Handler | None = None
         self.preview_dir = preview_dir or Path(tempfile.gettempdir()) / "clipper_ui"
         self.preview_dir.mkdir(parents=True, exist_ok=True)
-        self.progress: dict[str, Any] = {"running": False, "stage": "", "overall": 0.0, "message": "Idle", "report": None}
+        self.progress: dict[str, Any] = dict(IDLE_PROGRESS)
         self._tcache: tuple[str, Any, Any] | None = None   # (project id, transcript, audio)
 
     # ---- config / tools ------------------------------------------------------------------------
     def set_config(self, overrides: dict[str, Any]) -> AppConfig:
-        self.cfg = load_config(overrides=overrides)
+        self.cfg = self.base_cfg.with_overrides(overrides)
         return self.cfg
 
     def runner(self) -> FFmpegRunner:
@@ -99,6 +100,7 @@ class Workbench:
         self.store = store
         self._log_handler = attach_project_log(store.logs_dir)
         self._tcache = None
+        self.progress = dict(IDLE_PROGRESS)
 
     def project_choices(self, projects_dir: str | None = None) -> list[tuple[str, str]]:
         root = Path(projects_dir or self.cfg.paths.projects_dir).expanduser()

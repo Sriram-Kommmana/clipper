@@ -15,7 +15,7 @@ from src.core.project_manager import create_or_open_project
 from src.rendering import cutting
 from src.rendering.cutting import ClipRenderer, build_render_args, output_size
 from src.rendering.encoding import EncoderChoice, audio_args, choose_encoder
-from src.rendering.subject_tracking import Box, pick_subject, plan_crop_path
+from src.rendering.subject_tracking import Box, make_detector, pick_subject, plan_crop_path
 from src.rendering.vertical_video import blur_layout, crop_layout, lerp_expression, original_layout
 from tests.conftest import needs_ffmpeg
 from tests.helpers import make_transcript
@@ -105,6 +105,14 @@ def test_crop_plan_follows_real_movement_smoothly_and_in_bounds():
     assert [t for t, _ in p.keypoints] == sorted(t for t, _ in p.keypoints)
     capped = plan_crop_path(samples([0.2 + 0.6 * (i % 2) for i in range(200)], 0.1), 1920, 608, SmartCropConfig(max_keypoints=6, deadband_pct=0.0, smoothing=1.0))
     assert len(capped.keypoints) <= 6
+
+
+@pytest.mark.parametrize("name", ["face", "person"])
+def test_real_detectors_load_and_run(name):
+    # make_detector hides failures behind a centre crop, so a broken OpenCV must fail here instead.
+    detector = make_detector(name)
+    assert detector is not None
+    assert detector.detect(np.zeros((360, 640, 3), dtype=np.uint8)) == []
 
 
 def test_pick_subject_prefers_big_then_stable():

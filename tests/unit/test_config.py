@@ -7,8 +7,8 @@ from src.core.exceptions import ConfigError
 
 def test_defaults_load_and_validate(cfg):
     assert cfg.llm.model == "qwen3:4b"
-    assert cfg.transcription.model == "small"
-    assert cfg.selection.min_duration_s == 15 and cfg.selection.max_duration_s == 60
+    assert cfg.transcription.model == "large-v3-turbo"
+    assert cfg.selection.min_duration_s == 15 and cfg.selection.max_duration_s == 90
     assert cfg.selection.max_clips == 10
     assert abs(sum(cfg.scoring.weights.values()) - 1.0) < 1e-9
     assert cfg.render.width == 1080 and cfg.render.height == 1920

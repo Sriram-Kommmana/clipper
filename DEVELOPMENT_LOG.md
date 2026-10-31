@@ -93,14 +93,45 @@ no Ollama, Hugging Face/Ollama hosts blocked) — not on the target Windows lapt
 * Tests: **137 passed, 1 deselected** (the opt-in Ollama smoke test) in ≈30 s. Browser smoke test saved in `tests/ui/` (manual).
 * Python compatibility: `vermin` reports minimum 3.9 syntax; project documents 3.10–3.13 (only 3.13 was actually run).
 
+## Milestone 10 — first real-model run (Windows 11, Python 3.10, RTX 3050 6 GB)
+* Run on a 205 s text-to-speech test video with real Whisper `small` (CPU) and real `qwen3:latest` (8.2B). NVENC and the browser UI also worked.
+* Bugs the fake LLM could not reveal, now fixed:
+  * `json_schema_for` stripped every key named `title`, including the moment's `title` field, so every real LLM call failed validation.
+  * The model returned the timestamps of one transcript line (2-6 s), so every moment was dropped as too short. It now picks numbered
+    lines (`first_line`, `last_line`, after the title) and the code converts them to times.
+  * `opencv-python-headless>=4.8` resolved to 5.0, which removed the Haar and HOG detectors, so smart crop always fell back to a centre crop. Now `<5`.
+* Result after the fixes: 5 moments from 1 section, none dropped, no retries, all scored by the model; 2 selected, the others within `min_separation_s`.
+* Tests: 138 passed, 2 failed. Both failures are faulty tests: `test_robustness.py:151` reads a UTF-8 file with the system encoding, and
+  `test_transcription.py:122` assumes the machine has no CUDA.
+
+## Milestone 11 — audio triggers, boundaries and UI settings
+* Normal speech sat at 0.87 on the 0-1 energy scale, above the 0.75 "sustained" threshold, so talking counted as excitement. Peaks and sustained
+  spans must now also be `audio.loud_margin_db` (6 dB) above the recording's typical level. On the test video: 74 events before, 0 after.
+* Audio-triggered clips widen to whole sentences (`widen_to_sentences`), and are skipped if that exceeds `selection.max_duration_s`.
+* Previews and exports use the settings on screen instead of those from the last Run (driven in the browser: preview went from 540×960 to 360×640).
+* `set_config` builds on the startup config, so `--config` and `--projects-dir` are no longer lost. Opening a project clears the old progress message.
+* Headless runs write `logs/clipper.log`. The 2 faulty tests are fixed.
+* Tests: **147 passed**.
+
+## Milestone 12 — clip quality after the first real user video
+* A 20-minute Hindi and English interview gave poor clips. Cause: Whisper `small` produced largely garbled Devanagari (average word confidence 58 %, 34 % of words below 50 %) and took 51 minutes on CPU because `cublas64_12.dll` was missing.
+* GPU: Ollama ships that DLL in `lib/ollama/cuda_v12`, so the app now uses Ollama's copy and Whisper runs on the GPU with no extra download.
+* Added: `.srt`/`.vtt` import (`--transcript`, or the first tab), a low-confidence warning, and `।` as a sentence end. Default Whisper model is now `large-v3-turbo`.
+* Language: turbo's auto-detect called this video English (62 %), which translates instead of transcribing. If confidence comes back low, the next most likely language is tried and the clearer transcript kept, with a project warning.
+* Moment finding: numbered ~10 s lines with a clock, a one-line video description as context, a richer description of what makes a clip work, no category anchoring, a rule against guessing speakers, and short moments extended instead of dropped. Defaults: max clip 90 s (was 60), target 45 s, minimum gap 5 s (was 15).
+* Stage details (language, confidence) are no longer overwritten by "Done".
+* Result on the English test video: 4 of 4 stories found, none dropped.
+* Result on the 20-minute Hindi video: transcription 51 min → 3.6 min, word confidence 58 % → 78 %, moments dropped 9 of 18 → 0 of 16, candidates 8 → 12, selected 1 → 6. Devanagari captions and the word highlight render correctly. Top score moved only from 54 to 57, parts of the transcript are still garbled, and nobody has yet judged the clips by watching them.
+* Tests: **166 passed**.
+
 ## Known bugs / limitations
-* Real Whisper/Qwen3/GPU/NVENC/Windows paths unverified (see ROADMAP `[~]`).
+* Whisper on a GPU, `qwen3:4b` and smart crop on real faces are unverified (see ROADMAP `[~]`).
 * Transcription/LLM stages cannot resume mid-stage; a cancelled/failed stage restarts from its beginning.
 * Haar face detector is frontal-only; untested on real faces.
 * One open project / one job at a time (single-user local app).
 
 ## Next recommended actions (for you, on the laptop)
 1. `setup_windows.bat`, install Ollama, `python scripts\download_models.py`, `python scripts\check_environment.py`.
-2. `pytest` (should match 137 passed) and `pytest -m ollama tests/integration/test_ollama_smoke.py`.
+2. `pytest` (147 tests) and `pytest -m ollama tests/integration/test_ollama_smoke.py`.
 3. Run a 3–5 min clip of authorised content through the UI; compare chosen moments against your judgement; tune `configs/local.yaml`.
 4. Report anything odd (device shown in the Transcription stage row, caption sync, crop quality).

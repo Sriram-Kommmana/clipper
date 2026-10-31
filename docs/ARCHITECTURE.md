@@ -41,7 +41,7 @@ from the review UI or CLI, with its own content-hash cache so approving never re
 |---|---|
 | `core` | pydantic models & schemas, exception hierarchy (each with a recovery hint), `project_manager`, `job_manager` (stages, persistence, cancellation, progress), `exporter` (clips + summary) |
 | `ingestion` | `ffprobe` metadata, input validation, content fingerprint |
-| `transcription` | `Transcriber` with pluggable backend (faster-whisper; device/OOM fallback), transcript models, JSON/SRT |
+| `transcription` | `Transcriber` with pluggable backend (faster-whisper; device/OOM fallback), `importer` (timed `.srt`/`.vtt` instead of Whisper), transcript models, JSON/SRT |
 | `analysis` | audio features/events/quality, scene detection, frame extraction & visual checks |
 | `llm` | Ollama client (JSON-schema constrained output), prompts, tolerant parser + retrying structured call |
 | `candidates` | generator (sections), merger, scorer, selector, validator/boundary refiner |
@@ -93,7 +93,8 @@ blended with deterministic boundary/speech checks), **format_fit** (duration vs 
 
 ## Anti-hallucination measures
 
-* The model is asked only about the supplied timestamps; times are clamped into the section.
+* The model picks numbered transcript lines of about 10 s (`first_line`, `last_line`), clamped into the section; the
+  code turns them into times, so the model never states a timestamp.
 * Excerpts are always taken from the transcript by timestamp, never from model text.
 * The `hook` must be (fuzzily) present in the excerpt; otherwise it's replaced by the first sentence and a
   warning is added.

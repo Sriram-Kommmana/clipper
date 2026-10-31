@@ -1,3 +1,4 @@
+import logging
 import re
 import subprocess
 import sys
@@ -7,11 +8,15 @@ import pytest
 
 import app as app_module
 from config import load_config
-from src.core.exceptions import ResourceExhaustedError
+from src.core.exceptions import ConfigError, ResourceExhaustedError
+from src.core.job_manager import JobManager, JobReport
 from src.review.interface import RES_PRESETS, collect_overrides
+from src.review.workbench import Workbench
 from src.transcription.transcriber import FasterWhisperBackend
 from src.transcription.transcript_models import Transcript
 from src.utils.hardware_detection import is_gpu_memory_error, recommend
+from src.utils.logging_setup import detach_handler
+from tests.conftest import needs_ffmpeg
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -64,9 +69,9 @@ def rep(vram_mb=None, cuda=0, ram=16.0, ollama=True, models=("qwen3:4b",)):
 
 def test_recommendations_for_target_hardware():
     r = recommend(rep(6144, 1))
-    assert (r["whisper_model"], r["whisper_device"], r["llm_model"], r["performance_mode"]) == ("small", "cuda", "qwen3:4b", "normal")
+    assert (r["whisper_model"], r["whisper_device"], r["llm_model"], r["performance_mode"]) == ("large-v3-turbo", "cuda", "qwen3:4b", "normal")
     assert not r["notes"] or "6 GB" in r["notes"][0]
-    assert any("medium" in n for n in recommend(rep(8192, 1))["notes"])
+    assert any("qwen3:8b" in n for n in recommend(rep(8192, 1))["notes"])
     small = recommend(rep(3072, 1))
     assert small["llm_model"] == "qwen3:1.7b"
     cpu = recommend(rep(None, 0, ram=8, ollama=False))
@@ -110,6 +115,47 @@ def test_cli_run_reports_missing_file(capsys):
     assert "File not found" in capsys.readouterr().err
 
 
+@needs_ffmpeg
+def test_cli_run_writes_the_project_log(tmp_path, sample_info, monkeypatch):
+    def fake_run(self, **kw):
+        logging.getLogger("src.core.job_manager").warning("stage ran")
+        return JobReport(success=True)
+
+    monkeypatch.setattr(JobManager, "run", fake_run)
+    before = set(logging.getLogger().handlers)
+    try:
+        assert app_module.main(["run", sample_info.path, "--no-llm", "--out", str(tmp_path)]) == 0
+    finally:
+        for h in set(logging.getLogger().handlers) - before:
+            detach_handler(h)
+    log = next(tmp_path.glob("*/logs/clipper.log"))
+    assert "stage ran" in log.read_text(encoding="utf-8")
+
+
+def test_settings_keep_the_startup_config(tmp_path):
+    custom = tmp_path / "custom.yaml"
+    custom.write_text("selection: {max_clips: 3}\npaths: {projects_dir: elsewhere}\n", encoding="utf-8")
+    wb = Workbench(load_config(custom), preview_dir=tmp_path)
+    wb.set_config(collect_overrides(ui_values(max_clips=4)))
+    assert wb.cfg.selection.max_clips == 4 and wb.cfg.render.mode == "smart_crop", "UI values apply"
+    assert wb.cfg.paths.projects_dir == "elsewhere", "--config and --projects-dir survive"
+    wb.set_config({"subtitles": {"enabled": False}})
+    assert wb.cfg.selection.max_clips == 3 and wb.cfg.render.mode == "blur", "each call starts again from the startup config"
+    with pytest.raises(ConfigError):
+        wb.set_config({"selection": {"min_duration_s": 90}})
+
+
+@needs_ffmpeg
+def test_opening_another_project_clears_the_old_progress(tmp_path, sample_info):
+    wb = Workbench(load_config(local_path=None), preview_dir=tmp_path / "ui")
+    wb.progress.update(overall=0.4, message="Stopped: old failure", report=JobReport(success=False, error="old failure"))
+    try:
+        wb.open_video(sample_info.path, str(tmp_path / "projects"))
+        assert "old failure" not in wb.progress_html() and "Idle" in wb.progress_html()
+    finally:
+        detach_handler(wb._log_handler)
+
+
 # ---------------------------------------------------------------- zero paid API / privacy audit
 FORBIDDEN_IMPORTS = re.compile(r"^\s*(?:import|from)\s+(anthropic|openai|google\.generativeai|google\.genai|cohere|mistralai|replicate|together|groq|boto3|azure)\b", re.M)
 FORBIDDEN_ENV = re.compile(r"ANTHROPIC_API_KEY|OPENAI_API_KEY|GEMINI_API_KEY|GOOGLE_API_KEY|api\.openai\.com|api\.anthropic\.com", re.I)
@@ -125,7 +171,7 @@ def test_no_paid_api_clients_or_keys_anywhere():
         text = f.read_text(encoding="utf-8")
         assert not FORBIDDEN_IMPORTS.search(text), f"{f} imports a cloud AI SDK"
         assert not FORBIDDEN_ENV.search(text), f"{f} references a paid-API key or endpoint"
-    reqs = (ROOT / "requirements.txt").read_text().lower()
+    reqs = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
     for pkg in ("anthropic", "openai", "google-generativeai", "ultralytics", "boto3"):
         assert pkg not in reqs, f"{pkg} must not be a requirement"
 
@@ -148,11 +194,11 @@ def test_ui_binds_localhost_by_default_and_telemetry_is_off():
     import os
 
     assert os.environ["GRADIO_ANALYTICS_ENABLED"] == "False" and os.environ["HF_HUB_OFFLINE"] == "1"
-    assert "analytics_enabled=False" in (ROOT / "src/review/interface.py").read_text()
+    assert "analytics_enabled=False" in (ROOT / "src/review/interface.py").read_text(encoding="utf-8")
 
 
 def test_gitignore_blocks_media_and_secrets():
-    gi = (ROOT / ".gitignore").read_text()
+    gi = (ROOT / ".gitignore").read_text(encoding="utf-8")
     for pat in ("*.mp4", ".env", "venv/", "projects/", "*.pt", "*.safetensors", "cache/"):
         assert pat in gi
     tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split()

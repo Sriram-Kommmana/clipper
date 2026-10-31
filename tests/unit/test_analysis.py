@@ -42,6 +42,19 @@ def test_flat_audio_does_not_manufacture_peaks():
     assert any("dynamic range" in w for w in a.warnings)
 
 
+def test_ordinary_speech_is_not_an_event_but_a_shout_is():
+    # Speech with short pauses: varies by a few dB around one level, like the real test recording.
+    rng = np.random.default_rng(0)
+    rms = 0.1 * 10 ** (rng.normal(0, 2, 400) / 20)
+    rms[::12] = 1e-6
+    calm = analyze_rms(rms, 200.0, CFG)
+    assert not [e for e in calm.events if e.kind in ("sustained", "peak")]
+    rms[200:210] = 0.5     # 14 dB above the speech for 5 s
+    loud = analyze_rms(rms, 200.0, CFG)
+    sus = [e for e in loud.events if e.kind == "sustained"]
+    assert len(sus) == 1 and abs(sus[0].start - 100) <= 1 and abs(sus[0].end - 105) <= 1
+
+
 def test_empty_audio_warns():
     a = analyze_rms(np.zeros(0), 0.0, CFG)
     assert not a.has_audio and a.warnings

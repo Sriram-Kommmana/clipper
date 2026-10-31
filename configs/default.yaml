@@ -18,7 +18,8 @@ performance:
   low_priority: false             # run ffmpeg at below-normal priority (forced on in "low" mode)
 
 transcription:
-  model: small                    # tiny | base | small | medium | large-v2 (bigger = slower, more VRAM)
+  transcript_file: null           # an .srt/.vtt to use instead of Whisper (needs timestamps; stored in the project)
+  model: large-v3-turbo           # tiny | base | small | medium | large-v2 | large-v3 | large-v3-turbo (small is much weaker on Hindi)
   device: auto                    # auto | cuda | cpu
   compute_type: auto              # auto | float16 | int8_float16 | int8 | float32
   language: null                  # null = auto-detect, or an ISO code such as "en"
@@ -32,6 +33,7 @@ audio:
   silence_floor_db: -50.0
   sustained_threshold: 0.75       # normalised energy (0-1) that counts as "high"
   sustained_min_s: 3.0
+  loud_margin_db: 6.0             # peaks/sustained spans must be this far above the recording's typical level (so normal speech is not "excitement")
   change_sigma: 2.5               # energy jump (in std-devs) that counts as a sudden change
   peak_prominence: 0.25
 
@@ -66,12 +68,12 @@ boundaries:
 
 selection:
   min_duration_s: 15
-  max_duration_s: 60
-  target_duration_s: 40
+  max_duration_s: 90              # stories need room for their payoff
+  target_duration_s: 45
   overflow_tolerance: 1.2         # complete moments may exceed max by this factor (with a warning)
   max_clips: 10
   min_score: 45                   # 0-100
-  min_separation_s: 15            # gap between selected moments
+  min_separation_s: 5             # gap between selected moments
   diversity_penalty: 6            # score points subtracted per already-selected clip of the same category
   category_preferences: {}        # e.g. {funny: 1.1, quote: 0.9}  (multipliers on the score)
 

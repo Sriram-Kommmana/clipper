@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import logging
 import threading
 import time
@@ -14,12 +15,15 @@ from src.core.models import VideoInfo
 from src.rendering.ffmpeg_runner import FFmpegRunner
 from src.storage.cache import StageCache, make_key
 from src.storage.project_store import ProjectStore, atomic_write_text
+from src.transcription.importer import load_import
 from src.transcription.transcript_models import Transcript, TranscriptSegment, Word
 from src.utils.hardware_detection import is_gpu_memory_error, register_nvidia_dll_dirs
 
 log = logging.getLogger(__name__)
 
 STAGE_VERSION = 2
+LOW_CONFIDENCE = 0.7
+MIN_LANGUAGE_PROB = 0.02
 ProgressFn = Callable[[float, str], None]
 
 
@@ -50,6 +54,7 @@ class FasterWhisperBackend:
         self.compute_type = ""
         self._model = None
         self.fallback_note: str | None = None
+        self._language_probs: list[tuple[str, float]] = []
 
     # ---- loading -------------------------------------------------------------------------------
     def _plan(self) -> list[tuple[str, str]]:
@@ -116,7 +121,8 @@ class FasterWhisperBackend:
     def transcribe(self, wav, *, language, duration, on_progress, cancel) -> Transcript:
         self._load()
         try:
-            return self._run(wav, language, duration, on_progress, cancel)
+            result = self._run(wav, language, duration, on_progress, cancel)
+            return result if language else self._retry_if_misdetected(result, wav, duration, on_progress, cancel)
         except JobCancelled:
             raise
         except Exception as exc:
@@ -131,6 +137,23 @@ class FasterWhisperBackend:
                 raise ResourceExhaustedError(f"GPU error during transcription: {exc}") from exc
             raise TranscriptionError(f"Transcription failed: {exc}") from exc
 
+    def _retry_if_misdetected(self, first: Transcript, wav, duration, on_progress, cancel) -> Transcript:
+        """Hindi with English words can be detected as English, which translates instead of transcribing and shows up
+        as low word confidence. Then try the next most likely language and keep whichever transcript is more confident."""
+        confidence = first.mean_word_confidence()
+        if confidence is None or confidence >= LOW_CONFIDENCE:
+            return first
+        other = next((lang for lang, prob in self._language_probs if lang != first.language and prob >= MIN_LANGUAGE_PROB), None)
+        if other is None:
+            return first
+        log.warning("Word confidence %.0f%% with detected language '%s'; trying '%s'", 100 * confidence, first.language, other)
+        second = self._run(wav, other, duration, on_progress, cancel)
+        if (second.mean_word_confidence() or 0.0) <= confidence:
+            return first
+        self.fallback_note = (f"The language was detected as '{first.language}', but the transcript was much clearer as '{other}', so that was used. "
+                              f"Set the spoken language to '{other}' to skip the first attempt next time.")
+        return second
+
     def _run(self, wav, language, duration, on_progress, cancel) -> Transcript:
         assert self._model is not None
         seg_iter, info = self._model.transcribe(
@@ -138,6 +161,8 @@ class FasterWhisperBackend:
             vad_parameters={"min_silence_duration_ms": 500}, word_timestamps=True,
             condition_on_previous_text=False,
         )
+        if not language:
+            self._language_probs = list(info.all_language_probs or [])
         total = info.duration or duration or 1.0
         segments: list[TranscriptSegment] = []
         for seg in seg_iter:
@@ -167,8 +192,10 @@ class FasterWhisperBackend:
 
 
 # ---- stage-level orchestration (backend-agnostic, unit-tested with a fake backend) ----------------
-def transcript_cache_key(info: VideoInfo, cfg: AppConfig) -> str:
+def transcript_cache_key(info: VideoInfo, cfg: AppConfig, imported: Path | None = None) -> str:
     t = cfg.transcription
+    if imported is not None:
+        return make_key("transcript-import", STAGE_VERSION, info.fingerprint, t.language, hashlib.sha1(imported.read_bytes()).hexdigest())
     return make_key("transcript", STAGE_VERSION, info.fingerprint, t.model, t.language, t.vad_filter, cfg.effective().transcription.beam_size)
 
 
@@ -189,11 +216,11 @@ def extract_audio_wav(info: VideoInfo, wav: Path, runner: FFmpegRunner, *, on_pr
 def transcribe_video(
     info: VideoInfo, store: ProjectStore, cfg: AppConfig, runner: FFmpegRunner,
     *, backend: WhisperBackend | None = None, on_progress: ProgressFn | None = None,
-    cancel: threading.Event | None = None,
+    cancel: threading.Event | None = None, imported: Path | None = None,
 ) -> tuple[Transcript, bool]:
     """Returns (transcript, from_cache). Writes cache/transcript.json and cache/transcript.srt."""
     cache = StageCache(store.cache_dir)
-    key = transcript_cache_key(info, cfg)
+    key = transcript_cache_key(info, cfg, imported)
     hit = cache.load("transcript", key)
     if hit is not None:
         try:
@@ -202,6 +229,15 @@ def transcribe_video(
             log.warning("Cached transcript failed validation; recomputing")
 
     report = on_progress or (lambda f, m: None)
+    if imported is not None:
+        report(0.0, "Reading the imported transcript")
+        transcript, notes = load_import(imported, info.duration, cfg.transcription.language)
+        for note in notes:
+            store.add_warning(note)
+        cache.save("transcript", key, transcript.model_dump(mode="json"))
+        atomic_write_text(store.cache_dir / "transcript.srt", transcript.to_srt())
+        return transcript, False
+
     wav = store.work_dir / "audio_16k.wav"
     report(0.0, "Extracting audio")
     extract_audio_wav(info, wav, runner, on_progress=lambda f: report(0.1 * f, "Extracting audio"), cancel=cancel)
@@ -228,6 +264,10 @@ def transcribe_video(
         )
     log.info("Transcribed %d segments (%s, %s/%s) in %.1fs", len(transcript.segments), transcript.language,
              transcript.device, transcript.compute_type, time.monotonic() - started)
+    confidence = transcript.mean_word_confidence()
+    if confidence is not None and confidence < LOW_CONFIDENCE:
+        store.add_warning(f"The transcript looks unreliable (average word confidence {confidence:.0%}), and clip choices depend on it. "
+                          "Try a larger Whisper model, set the spoken language, or import an .srt/.vtt transcript.")
     cache.save("transcript", key, transcript.model_dump(mode="json"))
     atomic_write_text(store.cache_dir / "transcript.srt", transcript.to_srt())
     return transcript, False

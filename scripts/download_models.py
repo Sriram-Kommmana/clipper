@@ -1,7 +1,7 @@
 """One-time model download (the only step that needs internet besides `pip install`).
 
-    python scripts/download_models.py                       # whisper small + qwen3:4b
-    python scripts/download_models.py --whisper medium --llm qwen3:8b
+    python scripts/download_models.py                       # whisper large-v3-turbo + qwen3:4b
+    python scripts/download_models.py --whisper small --llm qwen3:8b
     python scripts/download_models.py --skip-llm
 
 After this, everything - including model loading - runs offline.
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.hardware_detection import detect_ollama  # noqa: E402
 
-WHISPER_CHOICES = ("tiny", "base", "small", "medium", "large-v2")
+WHISPER_CHOICES = ("tiny", "base", "small", "medium", "large-v2", "large-v3", "large-v3-turbo")
 
 
 def download_whisper(size: str) -> bool:
@@ -55,7 +55,7 @@ def pull_ollama(model: str, host: str) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--whisper", default="small", choices=WHISPER_CHOICES)
+    ap.add_argument("--whisper", default="large-v3-turbo", choices=WHISPER_CHOICES)
     ap.add_argument("--llm", default="qwen3:4b")
     ap.add_argument("--ollama-host", default="http://127.0.0.1:11434")
     ap.add_argument("--skip-whisper", action="store_true")

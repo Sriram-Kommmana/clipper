@@ -32,6 +32,7 @@ from src.llm.ollama_client import LLMClient, OllamaClient
 from src.rendering.ffmpeg_runner import FFmpegRunner
 from src.storage.cache import StageCache, make_key
 from src.storage.project_store import ProjectStore
+from src.transcription.importer import store_import, stored_import
 from src.transcription.transcriber import WhisperBackend, extract_audio_wav, transcribe_video, transcript_cache_key
 from src.transcription.transcript_models import Transcript
 
@@ -43,7 +44,7 @@ STAGE_LABELS = {
     "candidates": "Candidate generation", "scoring": "Scoring", "selection": "Selection",
 }
 STAGE_WEIGHT = {"transcribe": 0.40, "audio": 0.05, "scenes": 0.10, "candidates": 0.22, "scoring": 0.18, "selection": 0.05}
-VERSIONS = {"audio": 1, "scenes": 1, "cand": 2, "score": 2}
+VERSIONS = {"audio": 2, "scenes": 1, "cand": 5, "score": 3}
 
 ProgressCb = Callable[[str, float, float, str], None]   # stage, stage_fraction, overall_fraction, message
 
@@ -115,7 +116,7 @@ class JobManager:
     # ---- cache keys ----------------------------------------------------------------------------
     def keys(self) -> dict[str, str]:
         c, fp = self.eff, self.info.fingerprint
-        k: dict[str, str] = {"transcribe": transcript_cache_key(self.info, self.cfg)}
+        k: dict[str, str] = {"transcribe": transcript_cache_key(self.info, self.cfg, self._imported_transcript())}
         k["audio"] = make_key("audio", VERSIONS["audio"], fp, c.audio.model_dump())
         k["scenes"] = make_key("scenes", VERSIONS["scenes"], fp, c.scenes.model_dump())
         sel = {n: getattr(c.selection, n) for n in ("min_duration_s", "max_duration_s", "target_duration_s", "overflow_tolerance")}
@@ -137,9 +138,9 @@ class JobManager:
         for name, st in store.state.stages.items():          # crashed earlier run?
             if st.status == "running":
                 store.update_stage(name, status="interrupted", message="Previous run was interrupted; will re-run.")
-        keys = self.keys()
         done_weight = 0.0
         try:
+            keys = self.keys()
             for name in stages:
                 if cancel.is_set():
                     raise JobCancelled("Cancelled before stage '%s'" % name)
@@ -163,8 +164,9 @@ class JobManager:
                 store.update_stage(name, status="running", started_at=now_iso(), finished_at=None, error=None, recovery=None,
                                    cache_key=None, cached=False, progress=0.0, message="Starting")
                 self._run_stage(name, keys, prog, cancel)
+                details = store.stage(name).message            # keep what the stage reported, e.g. language and confidence
                 store.update_stage(name, status="done", finished_at=now_iso(), duration_s=round(time.monotonic() - t0, 2),
-                                   cache_key=keys[name], progress=1.0, message="Done")
+                                   cache_key=keys[name], progress=1.0, message=details if details != "Starting" else "Done")
                 report.completed.append(name)
                 done_weight += STAGE_WEIGHT[name]
                 prog(1.0, "Done")
@@ -236,9 +238,17 @@ class JobManager:
         return wav
 
     def _stage_transcribe(self, key, prog, cancel) -> None:
-        t, from_cache = transcribe_video(self.info, self.store, self.cfg, self.runner, backend=self._whisper, on_progress=prog, cancel=cancel)
+        t, from_cache = transcribe_video(self.info, self.store, self.cfg, self.runner, backend=self._whisper, on_progress=prog, cancel=cancel,
+                                         imported=self._imported_transcript())
+        confidence = t.mean_word_confidence()
+        quality = "imported transcript" if t.model == "imported" else f"word confidence {confidence:.0%}" if confidence is not None else "no confidence data"
         self.store.update_stage("transcribe", device=f"{t.device}/{t.compute_type}" if t.device else None,
-                                message=f"{len(t.segments)} segments, language {t.language}")
+                                message=f"{len(t.segments)} segments, language {t.language}, {quality}")
+
+    def _imported_transcript(self) -> Path | None:
+        """A transcript given for this run is kept in the project, so later runs reuse it instead of running Whisper."""
+        given = self.cfg.transcription.transcript_file
+        return store_import(given, self.store.root) if given else stored_import(self.store.root)
 
     def _stage_audio(self, key, prog, cancel) -> None:
         if not self.info.has_audio:
@@ -280,7 +290,7 @@ class JobManager:
         llm = self._ensure_llm_ready()
         c = self.eff
         cands, stats = generate_candidates(transcript, audio, c, llm, self.info.fingerprint, self.info.duration, cancel=cancel,
-                                           on_progress=lambda f, m: prog(0.9 * f, m))
+                                           on_progress=lambda f, m: prog(0.9 * f, m), title=Path(self.info.filename).stem.replace("_", " "))
         limits = Limits.from_config(c.selection)
         refined = [refine_boundaries(x, transcript, c.boundaries, limits, self.info.duration) for x in cands]
         refined, n = merge_candidates(refined, limits.hard_max)
@@ -310,7 +320,8 @@ class JobManager:
         llm = self._ensure_llm_ready()
         video = Path(self.info.path)
         scored = score_candidates(valid, transcript, audio, self.eff, llm, cancel=cancel,
-                                  visual_fn=lambda c: visual_suitability(video, c.start, c.end), on_progress=prog)
+                                  visual_fn=lambda c: visual_suitability(video, c.start, c.end), on_progress=prog,
+                                  context=raw.get("stats", {}).get("video_brief", ""))
         out = scored + [x for x in cands if x.filter_reason]
         llm_scored = sum(1 for x in scored if x.scores and x.scores.llm_scored)
         if scored and llm is not None and llm_scored < len(scored):

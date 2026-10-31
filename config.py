@@ -41,7 +41,8 @@ class PerformanceConfig(_Section):
 
 
 class TranscriptionConfig(_Section):
-    model: str = "small"
+    transcript_file: str | None = None
+    model: str = "large-v3-turbo"
     device: Literal["auto", "cuda", "cpu"] = "auto"
     compute_type: Literal["auto", "float16", "int8_float16", "int8", "float32"] = "auto"
     language: str | None = None
@@ -56,6 +57,7 @@ class AudioConfig(_Section):
     silence_floor_db: float = -50.0
     sustained_threshold: float = Field(0.75, ge=0, le=1)
     sustained_min_s: float = Field(3.0, gt=0)
+    loud_margin_db: float = Field(6.0, ge=0, le=30)
     change_sigma: float = Field(2.5, gt=0)
     peak_prominence: float = Field(0.25, gt=0, le=1)
 
@@ -100,12 +102,12 @@ class BoundariesConfig(_Section):
 
 class SelectionConfig(_Section):
     min_duration_s: float = Field(15, gt=1)
-    max_duration_s: float = Field(60, gt=1)
-    target_duration_s: float = Field(40, gt=1)
+    max_duration_s: float = Field(90, gt=1)
+    target_duration_s: float = Field(45, gt=1)
     overflow_tolerance: float = Field(1.2, ge=1.0, le=2.0)
     max_clips: int = Field(10, ge=1, le=100)
     min_score: float = Field(45, ge=0, le=100)
-    min_separation_s: float = Field(15, ge=0)
+    min_separation_s: float = Field(5, ge=0)
     diversity_penalty: float = Field(6, ge=0, le=50)
     category_preferences: dict[str, float] = Field(default_factory=dict)
 
@@ -252,6 +254,10 @@ class AppConfig(_Section):
         data = {s: getattr(self, s).model_dump(mode="json") for s in sorted(sections)}
         return hashlib.sha1(json.dumps(data, sort_keys=True).encode()).hexdigest()[:12]
 
+    def with_overrides(self, overrides: dict[str, Any]) -> "AppConfig":
+        """A validated copy with `overrides` applied on top. Raises ConfigError with a readable message."""
+        return _validate(_deep_merge(self.model_dump(mode="json"), overrides))
+
 
 def _deep_merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(base)
@@ -284,6 +290,10 @@ def load_config(
         data = _deep_merge(data, _read_yaml(Path(local_path)))
     if overrides:
         data = _deep_merge(data, overrides)
+    return _validate(data)
+
+
+def _validate(data: dict[str, Any]) -> AppConfig:
     try:
         return AppConfig.model_validate(data)
     except ValidationError as exc:
