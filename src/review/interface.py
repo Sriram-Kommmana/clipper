@@ -86,8 +86,8 @@ def build_ui(wb: Workbench) -> gr.Blocks:
                 with gr.Row():
                     with gr.Column(scale=3):
                         path_tb = gr.Textbox(label="Video file (path on this computer)", placeholder=r"C:\Videos\podcast.mp4",
-                                             info="MP4, MOV or MKV. Tip: shift+right-click the file in Explorer → Copy as path.")
-                        upload = gr.File(label="…or pick a file", file_count="single", type="filepath", file_types=[".mp4", ".mov", ".mkv"], height=90)
+                                             info="MP4, MOV, MKV, WebM, M4V or AVI. Tip: shift+right-click the file in Explorer → Copy as path.")
+                        upload = gr.File(label="…or pick a file", file_count="single", type="filepath", file_types=[".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"], height=90)
                         transcript_up = gr.File(label="Transcript (optional): skips Whisper. Must be .srt or .vtt, with timestamps", file_count="single",
                                                 type="filepath", file_types=[".srt", ".vtt"], height=90)
                         out_tb = gr.Textbox(label="Output folder (projects are stored here)", value=str(wb.cfg.paths.projects_dir))

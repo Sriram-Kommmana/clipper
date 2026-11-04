@@ -7,7 +7,7 @@ from pathlib import Path
 
 from src.core.exceptions import InvalidMediaError
 
-SUPPORTED_EXTENSIONS = (".mp4", ".mov", ".mkv")
+SUPPORTED_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi")
 _CHUNK = 1 << 20  # 1 MiB
 
 

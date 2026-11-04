@@ -48,5 +48,18 @@ Legend: `[x]` implemented **and** exercised by tests or a real run in the dev sa
 - [x] README, troubleshooting, third-party notices, architecture, reference analysis
 - [x] Development log kept per milestone
 
+## Phase 8 — Robustness pass after the competitor review (2026-11)
+- [x] Per-section / per-batch LLM answers kept; failed sections reported and retried alone
+- [x] Scoring judges the clip text alone (**whether this raises quality is unmeasured**; use `python app.py eval`)
+- [x] Optional `llm.audio_hints` (off by default until compared on real videos)
+- [x] Opening / sponsor-read warnings (English, Hindi, Romanised Hindi)
+- [x] Smart-crop path planned per scene cut; per-shot centre fallback
+- [x] Two-pass linear loudness normalisation of exports
+- [x] Evaluation harness: `python app.py eval` + `docs/EVALUATION.md`
+- [x] GitHub Actions workflow running the test suite (**not yet seen to run on GitHub**)
+- [x] WebM / M4V / AVI inputs
+- [ ] Run `eval` on real labelled videos and decide the `audio_hints` default
+- [ ] A licence for the repository (the owner has to choose it)
+
 ## Ideas not started
-Hinglish-tuned Whisper models (need conversion to CTranslate2) · feedback loop from rejected clips (learning from examples moved results most in published research) · speaker diarisation · local VLM visual validation · batch of several videos · mid-stage checkpointing
+Better face detector than Haar (YuNet / MediaPipe; needs a model download) · standalone-clip gate and ending/opening review passes with the LLM · head-to-head re-rank of finalists · video-kind routing of prompts · Roman-script (Hinglish) captions · Hinglish-tuned Whisper models (need conversion to CTranslate2) · feedback loop from rejected clips (learning from examples moved results most in published research) · speaker diarisation · local VLM visual validation · batch of several videos · mid-stage checkpointing

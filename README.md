@@ -65,6 +65,17 @@ The file is kept in the project as `imported_transcript.*` and reused by later r
   Weights live in `configs/default.yaml`. **It is a ranking heuristic for ordering your review queue — not a prediction of views, engagement or revenue.**
 * Selection honours min/max/target duration, max clips, min score, minimum gap between clips, category preferences and a diversity penalty. Your approvals/rejections/edits survive re-runs.
 
+## Robustness
+* **Nothing finished is thrown away.** Each transcript section's model answer and each scoring batch is stored as soon as it arrives
+  (`cache/llm_answers.json`). After a crash, a cancel or an Ollama hiccup, *Run / resume* asks the model only for what is missing.
+* **Holes are reported, not hidden.** If the model gave no usable answer for some part of the transcript, the project shows an
+  "Incomplete analysis" warning naming the sections; the next run retries just those.
+* **Clips are judged on their own words.** The scoring prompt sees only the clip text (no neighbouring transcript), like a viewer who
+  starts at the first word. Openings that continue earlier speech ("And that is why…", "जैसा कि मैंने पहले कहा…") and likely sponsor reads get a warning.
+* **Smart crop respects edits.** The crop path is planned per scene cut: it holds, then jumps at the cut instead of panning through it.
+* **Exports are loudness-matched.** Each exported clip is measured and given one linear gain to −14 LUFS (`render.normalize_audio`); it falls back to the original level if anything is off.
+* **Measure quality instead of guessing.** `python app.py eval` scores a project against moments you labelled by hand: [docs/EVALUATION.md](docs/EVALUATION.md).
+
 ## Configuration
 Defaults: `configs/default.yaml` (documented). Put overrides in `configs/local.yaml` (git-ignored), e.g.
 ```yaml
@@ -86,7 +97,7 @@ Licences of dependencies/models: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md
 ## Tests
 ```bash
 pip install -r requirements-dev.txt
-pytest                                   # 166 tests, ~30 s, needs FFmpeg, no models/internet
+pytest                                   # 225 tests, ~1 min, needs FFmpeg, no models/internet (also run by GitHub Actions)
 pytest -m ollama tests/integration/test_ollama_smoke.py   # optional: real local Ollama model
 node tests/ui/ui_smoke.js …              # optional browser smoke test (see tests/ui/README.md)
 ```
@@ -100,4 +111,4 @@ subprocesses use argument lists (no shell) with absolute, validated paths; model
 * Clip quality is still a judgement call. Published research found general AI models only modestly better than random at predicting highlights without training examples, so treat the ranking as a shortlist; the review step exists for that. Non-English quality depends mostly on the transcript.
 * No speaker diarisation. Smart crop uses OpenCV's frontal-face Haar detector (cheap, misses profiles/groups); it falls back to a centre crop and reports it.
 * One job at a time; the UI is single-user. Captions burn in with libass using your installed fonts.
-* Only local MP4/MOV/MKV files; no URL download, no auto-upload.
+* Only local MP4/MOV/MKV/WebM/M4V/AVI files; no URL download, no auto-upload.
