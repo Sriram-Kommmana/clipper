@@ -13,15 +13,17 @@ from typing import Callable
 from config import AppConfig
 from src.core.exceptions import FFmpegError, JobCancelled, RenderError
 from src.core.models import Candidate, SubtitleLine, VideoInfo
+from src.rendering import loudness
 from src.rendering import subtitles as subs
 from src.rendering.encoding import EncoderChoice, audio_args, choose_encoder
 from src.rendering.ffmpeg_runner import FFmpegRunner
 from src.rendering.subject_tracking import CropPlan, make_detector, plan_crop_path, sample_subject_track
 from src.rendering.vertical_video import blur_layout, crop_layout, original_layout
+from src.storage.cache import StageCache
 from src.storage.project_store import ProjectStore
 
 log = logging.getLogger(__name__)
-RENDER_VERSION = 3
+RENDER_VERSION = 4
 ProgressFn = Callable[[float], None]
 
 
@@ -48,7 +50,7 @@ def output_size(cfg: AppConfig, info: VideoInfo, preview: bool) -> tuple[int, in
 
 def build_render_args(
     info: VideoInfo, start: float, end: float, cfg: AppConfig, encoder: EncoderChoice, out_path: Path,
-    *, preview: bool, ass_name: str | None, crop_points: list[tuple[float, float]] | None,
+    *, preview: bool, ass_name: str | None, crop_points: list[tuple[float, float]] | None, norm_filter: str | None = None,
 ) -> list[str]:
     """Complete ffmpeg argument list (without the executable). Input-side -ss + re-encode = frame-accurate cut."""
     w, h = output_size(cfg, info, preview)
@@ -65,7 +67,7 @@ def build_render_args(
     return [
         "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", info.path, "-t", f"{end - start:.3f}",
         "-filter_complex", graph, "-map", "[vout]", *encoder.video_args, "-r", f"{fps:.3f}",
-        *audio_args(cfg.render.audio_bitrate, info.has_audio), "-movflags", "+faststart", "-sn", "-dn", str(out_path),
+        *audio_args(cfg.render.audio_bitrate, info.has_audio, norm_filter), "-movflags", "+faststart", "-sn", "-dn", str(out_path),
     ]
 
 
@@ -81,11 +83,22 @@ class ClipRenderer:
             return subs.clip_lines(c.subtitle_lines, c.start, c.end)
         return subs.lines_from_transcript(transcript, c.start, c.end, self.cfg.subtitles)
 
+    def shot_cuts(self, c: Candidate) -> list[float]:
+        """Scene cuts inside the clip, in clip time, from the analysis stage (empty if scenes were not analysed).
+        Cuts within a third of a second of either end are ignored: they would only produce a flicker."""
+        data = StageCache(self.store.cache_dir).load_any("scenes")
+        cuts = data.get("cuts") if isinstance(data, dict) else None
+        if not isinstance(cuts, list):
+            return []
+        return [round(float(t) - c.start, 3) for t in cuts
+                if isinstance(t, (int, float)) and c.start + 0.3 < float(t) < c.end - 0.3]
+
     def render_key(self, c: Candidate, lines: list[SubtitleLine], preview: bool) -> str:
         blob = json.dumps({
             "v": RENDER_VERSION, "fp": self.info.fingerprint, "s": round(c.start, 3), "e": round(c.end, 3), "p": preview,
             "render": self.cfg.render.model_dump(), "subs": self.cfg.subtitles.model_dump() if self.cfg.subtitles.enabled else None,
             "sc": self.cfg.smart_crop.model_dump() if self.cfg.render.mode == "smart_crop" else None,
+            "cuts": self.shot_cuts(c) if self.cfg.render.mode == "smart_crop" else None,
             "lines": [l.model_dump() for l in lines],
         }, sort_keys=True, default=str)
         return hashlib.sha1(blob.encode()).hexdigest()[:12]
@@ -117,10 +130,17 @@ class ClipRenderer:
             crop_points = plan.keypoints
             notes += plan.notes
 
+        norm_filter = None
+        if self.cfg.render.normalize_audio and not preview and self.info.has_audio:
+            m = loudness.measure(self.runner, self.info, c.start, c.end, self.cfg.render.target_lufs, cancel)
+            norm_filter, norm_note = loudness.normalise_filter(m, self.cfg.render.target_lufs)
+            notes.append(norm_note)
+
         tmp = out.with_suffix(".part.mp4")
         encoder = choose_encoder(self.runner, self.cfg.render, preview=preview)
         for attempt in (0, 1):
-            args = build_render_args(self.info, c.start, c.end, self.cfg, encoder, tmp, preview=preview, ass_name=ass_name, crop_points=crop_points)
+            args = build_render_args(self.info, c.start, c.end, self.cfg, encoder, tmp, preview=preview, ass_name=ass_name,
+                                     crop_points=crop_points, norm_filter=norm_filter)
             try:
                 # cwd = renders dir lets the filter refer to the .ass by bare name (no Windows drive-letter escaping)
                 self.runner.run(args, duration=c.end - c.start, on_progress=on_progress, cancel=cancel, cwd=self.store.renders_dir)
@@ -155,8 +175,9 @@ class ClipRenderer:
         detector = make_detector(sc.detector)
         if detector is None:
             return CropPlan([(0.0, (info.width - crop_w) / 2)], 0.0, True, ["Smart crop: detector unavailable - centre crop used."])
-        samples = sample_subject_track(Path(info.path), c.start, c.end, detector, sc, cancel)
-        plan = plan_crop_path(samples, info.width, crop_w, sc)
+        cuts = self.shot_cuts(c)
+        samples = sample_subject_track(Path(info.path), c.start, c.end, detector, sc, cancel, cuts=cuts)
+        plan = plan_crop_path(samples, info.width, crop_w, sc, cuts=cuts, duration=c.end - c.start)
         if not plan.fallback:
             plan.notes.append(f"Smart crop followed a subject ({plan.detection_ratio:.0%} of samples, {len(plan.keypoints)} keypoints).")
         return plan

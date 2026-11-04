@@ -15,7 +15,7 @@ def test_validate_rejects_bad_inputs(tmp_path):
         d = tmp_path / "dir.mp4"
         d.mkdir()
         validate_input_path(d)
-    bad = tmp_path / "clip.avi"
+    bad = tmp_path / "clip.flv"
     bad.write_bytes(b"x")
     with pytest.raises(InvalidMediaError, match="Unsupported"):
         validate_input_path(bad)
@@ -90,3 +90,24 @@ def test_inspect_silent_and_corrupt(silent_video, runner, tmp_path):
     corrupt.write_bytes(b"this is definitely not a video" * 100)
     with pytest.raises(InvalidMediaError, match="could not be read"):
         inspect_video(corrupt, runner)
+
+
+@pytest.mark.parametrize("ext", [".webm", ".m4v", ".avi", ".MKV", ".Mp4"])
+def test_more_container_formats_are_accepted(tmp_path, ext):
+    f = tmp_path / f"clip{ext}"
+    f.write_bytes(b"x")
+    assert validate_input_path(f) == f.resolve()
+
+
+@needs_ffmpeg
+def test_an_avi_file_goes_through_probing(tmp_path, runner):
+    """Not just the extension check: an AVI really probes, and gets a fingerprint."""
+    import subprocess
+
+    from src.ingestion.video_probe import inspect_video
+
+    out = tmp_path / "t.avi"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=2",
+                    "-f", "lavfi", "-i", "sine=f=300:d=2", "-c:v", "mpeg4", "-c:a", "mp3", "-shortest", str(out)], check=True)
+    info = inspect_video(out, runner)
+    assert (info.width, info.height) == (320, 240) and info.has_audio and info.duration == pytest.approx(2.0, abs=0.2) and info.fingerprint

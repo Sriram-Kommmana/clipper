@@ -44,10 +44,11 @@ from the review UI or CLI, with its own content-hash cache so approving never re
 | `transcription` | `Transcriber` with pluggable backend (faster-whisper; device/OOM fallback), `importer` (timed `.srt`/`.vtt` instead of Whisper), transcript models, JSON/SRT |
 | `analysis` | audio features/events/quality, scene detection, frame extraction & visual checks |
 | `llm` | Ollama client (JSON-schema constrained output), prompts, tolerant parser + retrying structured call |
-| `candidates` | generator (sections), merger, scorer, selector, validator/boundary refiner |
-| `rendering` | FFmpeg runner (argument lists only), command builders, ASS subtitles, vertical layouts, subject detectors, encoders |
+| `candidates` | generator (sections), merger, scorer, selector, validator/boundary refiner, `heuristics` (opening / sponsor warnings) |
+| `rendering` | FFmpeg runner (argument lists only), command builders, ASS subtitles, vertical layouts, subject detectors + per-shot crop planning, encoders, `loudness` (two-pass normalisation) |
 | `review` | `workbench` (UI-independent controller), `actions` (approve/reject/edit bounds/captions), `interface` (Gradio) |
-| `storage` | atomic JSON IO, stage cache with keys, per-project store |
+| `storage` | atomic JSON IO, stage cache with keys, `KeyedStore` (content-addressed LLM answers), per-project store |
+| `evaluation` | metrics comparing a project's clips with hand-labelled moments (`python app.py eval`) |
 | `utils` | logging, hardware detection |
 
 Top level: `app.py` (CLI + UI launcher), `config.py` (validated config), `scripts/` (diagnostics, model download).
@@ -76,7 +77,11 @@ version, upstream keys). A stage is skipped iff its cache file exists and its ke
 Whisper model invalidates the transcript *and everything downstream*; changing `selection.*` only re-runs
 selection. Job state (`pending/running/done/failed/cancelled/skipped`) is persisted before and after
 every stage, so a crash leaves `running` which is reported as `interrupted` on next open and simply
-re-run. Completed stages are never repeated. Candidate edits (status, bounds, subtitle overrides) live in
+re-run. Completed stages are never repeated. Inside a stage, every model answer is also kept on its own: `cache/llm_answers.json` maps a hash of (model, sampling settings, exact
+prompt text) to the answer for one transcript section, the video brief or one scoring batch. A crash, a cancel or a failed section therefore
+costs only the missing answers on the next run. A candidates stage that finished with unanswered sections is not treated as fresh, so the next run
+retries it (cheaply, from the store) and re-runs scoring and selection after it.
+Candidate edits (status, bounds, subtitle overrides) live in
 `candidates.json` and survive re-selection because decisions are merged by stable candidate ID.
 
 ## Candidate IDs
@@ -98,6 +103,7 @@ blended with deterministic boundary/speech checks), **format_fit** (duration vs 
 * Excerpts are always taken from the transcript by timestamp, never from model text.
 * The `hook` must be (fuzzily) present in the excerpt; otherwise it's replaced by the first sentence and a
   warning is added.
+* Scoring sees only the clip text, never the transcript around it (a viewer has no such context).
 * All responses are parsed through pydantic schemas; invalid → bounded retries → structured error.
 * Model output is data only: never executed, never used in a shell command or file path.
 

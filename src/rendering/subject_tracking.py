@@ -14,6 +14,8 @@ from typing import Protocol
 import numpy as np
 
 from config import SmartCropConfig
+
+SmoothingParams = SmartCropConfig
 from src.analysis.frame_extraction import read_frames
 
 log = logging.getLogger(__name__)
@@ -111,24 +113,16 @@ def pick_subject(boxes: list[Box], prev_cx: float | None) -> Box | None:
     return min(contenders, key=lambda b: abs(b.cx - prev_cx))
 
 
-def plan_crop_path(samples: list[tuple[float, float | None]], src_w: int, crop_w: int, cfg: SmartCropConfig) -> CropPlan:
-    """Turn raw subject-centre samples [(t, cx_norm or None)] into a smooth, dead-banded crop path.
+CUT_RAMP_S = 0.04   # a cut is followed by a jump this fast (about one frame); never a pan through the edit
 
-    * too few detections -> centre crop (fallback)
-    * the crop holds still until the subject leaves a dead-band, then glides toward it (smoothing factor)
-    * keypoints are thinned to cfg.max_keypoints
-    """
-    centre_x = (src_w - crop_w) / 2
-    hits = [(t, c) for t, c in samples if c is not None]
-    ratio = len(hits) / max(1, len(samples))
-    if ratio < cfg.min_detection_ratio or not hits:
-        return CropPlan([(0.0, centre_x)], ratio, True, [f"Subject found in only {ratio:.0%} of samples - used a centre crop."])
-    # forward/back-fill gaps so the path is defined everywhere, then median-filter single-sample outliers
+
+def _smooth_shot(samples: list[tuple[float, float | None]], src_w: int, crop_w: int, cfg: SmoothingParams) -> list[tuple[float, float]]:
+    """Dead-banded, gliding crop path for ONE shot. Needs at least one detection."""
     cx = np.array([np.nan if c is None else c * src_w for _, c in samples], dtype=float)
     idx = np.arange(len(cx))
     good = ~np.isnan(cx)
-    cx = np.interp(idx, idx[good], cx[good])
-    if len(cx) >= 3:
+    cx = np.interp(idx, idx[good], cx[good])           # forward/back-fill gaps so the path is defined everywhere
+    if len(cx) >= 3:                                   # median-filter single-sample outliers
         padded = np.pad(cx, 1, mode="edge")
         cx = np.median(np.stack([padded[:-2], padded[1:-1], padded[2:]]), axis=0)
     dead = cfg.deadband_pct * src_w
@@ -140,7 +134,13 @@ def plan_crop_path(samples: list[tuple[float, float | None]], src_w: int, crop_w
             cur += (edge - cur) * max(cfg.smoothing, 0.05)
         left = float(np.clip(cur - crop_w / 2, 0, src_w - crop_w))
         pts.append((float(t), left))
-    # drop points that lie (within 2px) on the line between their neighbours
+    return pts
+
+
+def _drop_collinear(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop points that lie (within 2 px) on the line between their neighbours."""
+    if len(pts) <= 2:
+        return pts
     thin = [pts[0]]
     for i in range(1, len(pts) - 1):
         (t0, x0), (t1, x1), (t2, x2) = thin[-1], pts[i], pts[i + 1]
@@ -148,24 +148,93 @@ def plan_crop_path(samples: list[tuple[float, float | None]], src_w: int, crop_w
         if abs(interp - x1) > 2.0:
             thin.append(pts[i])
     thin.append(pts[-1])
-    if len(thin) > cfg.max_keypoints:
-        step = (len(thin) - 1) / (cfg.max_keypoints - 1)
-        thin = [thin[round(i * step)] for i in range(cfg.max_keypoints)]
-    return CropPlan(thin, ratio, False)
+    return thin
+
+
+def _cap(pts: list[tuple[float, float]], limit: int) -> list[tuple[float, float]]:
+    if len(pts) <= limit:
+        return pts
+    step = (len(pts) - 1) / (limit - 1)
+    return [pts[round(i * step)] for i in range(limit)]
+
+
+def split_shots(samples: list[tuple[float, float | None]], cuts: list[float] | None, duration: float | None = None
+                ) -> list[tuple[float, float, list[tuple[float, float | None]]]]:
+    """[(shot_start, shot_end, samples inside it)] for clip-relative `cuts`; no cuts = one shot."""
+    end = duration if duration is not None else (samples[-1][0] if samples else 0.0)
+    edges = [0.0] + sorted(c for c in (cuts or []) if 0.0 < c < end) + [end]
+    shots = []
+    for a, b in zip(edges, edges[1:]):
+        inside = [(t, c) for t, c in samples if a <= t < b or (b == end and t == end)]
+        shots.append((a, b, inside))
+    return shots
+
+
+def plan_crop_path(samples: list[tuple[float, float | None]], src_w: int, crop_w: int, cfg: SmartCropConfig,
+                   cuts: list[float] | None = None, duration: float | None = None) -> CropPlan:
+    """Turn raw subject-centre samples [(t, cx_norm or None)] into a smooth, dead-banded crop path.
+
+    * too few detections -> centre crop (fallback)
+    * the crop holds still until the subject leaves a dead-band, then glides toward it (smoothing factor)
+    * `cuts` (clip-relative scene cuts): every shot is planned on its own and the crop JUMPS at a cut instead of panning
+      through the edit, which is the most obvious sign of automatic reframing. A shot where the subject was not found
+      gets a centre crop rather than inheriting the previous camera's position.
+    * keypoints are thinned to cfg.max_keypoints (per shot, within a global cap)
+    """
+    centre_x = (src_w - crop_w) / 2
+    hits = [(t, c) for t, c in samples if c is not None]
+    ratio = len(hits) / max(1, len(samples))
+    if ratio < cfg.min_detection_ratio or not hits:
+        return CropPlan([(0.0, centre_x)], ratio, True, [f"Subject found in only {ratio:.0%} of samples - used a centre crop."])
+    shots = split_shots(samples, cuts, duration)
+    notes: list[str] = []
+    out: list[tuple[float, float]] = []
+    budget = max(3, cfg.max_keypoints // max(1, len(shots)))
+    for i, (a, b, inside) in enumerate(shots):
+        found = sum(1 for _, c in inside if c is not None)
+        if inside and found / len(inside) >= cfg.min_detection_ratio:
+            pts = _cap(_drop_collinear(_smooth_shot(inside, src_w, crop_w, cfg)), budget)
+        else:
+            pts = [(a, centre_x)]
+            if len(shots) > 1:
+                notes.append(f"Shot {i + 1} ({a:.1f}-{b:.1f}s): subject not found - centre crop.")
+        pts = [(a, pts[0][1])] + [p for p in pts if p[0] > a]       # a shot's path starts at its first frame
+        if i < len(shots) - 1 and b - a > 2 * CUT_RAMP_S:
+            hold, final = b - CUT_RAMP_S, pts[-1][1]                  # stay put right up to the cut, then jump
+            pts = [p for p in pts if p[0] < hold] + [(hold, final)]
+        out.extend(pts)
+    clean: list[tuple[float, float]] = []                             # strictly increasing times (a shot can be shorter than the ramp)
+    for t, x in out:
+        if not clean or t > clean[-1][0]:
+            clean.append((t, x))
+    if len(shots) > 1:
+        notes.append(f"Crop path reset at {len(shots) - 1} scene cut(s).")
+    return CropPlan(clean, ratio, False, notes)
 
 
 def sample_subject_track(
     video: Path, start: float, end: float, detector: SubjectDetector, cfg: SmartCropConfig,
-    cancel: threading.Event | None = None,
+    cancel: threading.Event | None = None, cuts: list[float] | None = None,
 ) -> list[tuple[float, float | None]]:
-    """Detect the main subject every `sample_interval_s` (one frame in memory at a time)."""
+    """Detect the main subject every `sample_interval_s` (one frame in memory at a time).
+
+    `cuts` are clip-relative scene cuts: one extra sample is taken just after each (so every shot is seen from its
+    first moments) and the "stay with the previous subject" preference is forgotten at a cut, because after an edit
+    the previous subject's position means nothing."""
     n = max(2, int((end - start) / cfg.sample_interval_s))
     times = [start + (end - start) * i / (n - 1) for i in range(n)]
+    extra = [start + c + 0.15 for c in (cuts or []) if 0 < c and start + c + 0.15 < end]
+    times = sorted(set(round(t, 3) for t in times + extra))
+    cut_abs = sorted(start + c for c in (cuts or []))
     got: dict[float, float | None] = {t: None for t in times}
     prev: float | None = None
+    last_t = start
     for t, frame in read_frames(video, times, max_width=640):
         if cancel is not None and cancel.is_set():
             break
+        if any(last_t < c <= t for c in cut_abs):
+            prev = None
+        last_t = t
         box = pick_subject(detector.detect(frame), prev)
         if box:
             got[t] = prev = box.cx

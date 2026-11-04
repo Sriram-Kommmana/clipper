@@ -26,6 +26,7 @@ from src.core.schemas import MomentList, RawMoment, VideoBrief
 from src.llm.ollama_client import LLMClient
 from src.llm.output_parser import structured_call
 from src.llm.prompts import brief_prompt, moment_prompt
+from src.storage.cache import KeyedStore, make_key
 from src.transcription.transcript_models import Transcript, TranscriptSegment
 
 log = logging.getLogger(__name__)
@@ -74,8 +75,27 @@ class Section:
     def __post_init__(self) -> None:
         self.blocks = make_blocks(self.segments)
 
-    def render(self) -> str:
-        return "\n".join(f"{i} [{clock(b.start)}] {b.text}" for i, b in enumerate(self.blocks))
+    def render(self, tags: list[str] | None = None) -> str:
+        """The numbered lines the model reads. `tags[i]` (if any) is appended to line i, e.g. a measured-audio note."""
+        return "\n".join(f"{i} [{clock(b.start)}] {b.text}{(' ' + tags[i]) if tags and tags[i] else ''}" for i, b in enumerate(self.blocks))
+
+
+AUDIO_TAG_SUSTAINED = "[audio: sustained loud delivery]"
+AUDIO_TAG_PEAK = "[audio: sudden loud peak]"
+
+
+def audio_tags(blocks: list[Block], audio: AudioAnalysis | None) -> list[str]:
+    """One short note per line for lines whose *measured* sound stands out from the recording's own level.
+
+    A transcript cannot show laughter, applause or a raised voice. These notes are sparse on purpose (the audio
+    analysis already requires `audio.loud_margin_db` above typical speech), so a line without a note is the norm."""
+    if not audio or not audio.has_audio or not audio.events:
+        return [""] * len(blocks)
+    out: list[str] = []
+    for b in blocks:
+        kinds = {e.kind for e in audio.events_in(b.start, b.end, ("sustained", "peak"))}
+        out.append(AUDIO_TAG_SUSTAINED if "sustained" in kinds else AUDIO_TAG_PEAK if "peak" in kinds else "")
+    return out
 
 
 def candidate_id(fingerprint: str, start: float, end: float, category: str) -> str:
@@ -162,44 +182,78 @@ def moment_to_candidate(m: RawMoment, sec: Section, transcript: Transcript, cfg:
     ), None
 
 
-def video_brief(transcript: Transcript, llm: LLMClient, title: str = "", *, retries: int = 1, cancel: threading.Event | None = None) -> str:
-    """One short description of the video, given to later prompts. Optional: failure just means no extra context."""
+def video_brief(transcript: Transcript, llm: LLMClient, title: str = "", *, retries: int = 1, cancel: threading.Event | None = None,
+                store: KeyedStore | None = None) -> str:
+    """One short description of the video, given to later prompts. Optional: failure just means no extra context.
+
+    It is stored like a section answer: the brief is part of every section prompt, so if a resumed run wrote it
+    differently, every cached section would miss."""
     segs = [s.text.strip() for s in transcript.segments if s.text.strip()]
     third = max(1, len(segs) // 3)
     sample = "\n...\n".join(" ".join(segs[i:i + third])[:BRIEF_SAMPLE_CHARS // 3] for i in range(0, len(segs), third))
     p = brief_prompt(title, sample)
+    key = make_key("brief", getattr(llm, "model", ""), p.system, p.user)
+    if store is not None and isinstance(hit := store.get(key), str):
+        return hit
     try:
         brief, _ = structured_call(llm, p.system, p.user, VideoBrief, retries=retries, cancel=cancel)
     except LLMOutputError as exc:
         log.warning("Could not describe the video: %s", exc)
         return ""
+    if store is not None:
+        store.put(key, brief.summary)
     return brief.summary
+
+
+def section_cache_key(llm: LLMClient, cfg: AppConfig, p) -> str:
+    """Everything a section's answer depends on: the model, its sampling settings and the exact prompt text."""
+    c = cfg.llm
+    return make_key("moments", getattr(llm, "model", ""), c.temperature, c.seed, c.num_ctx, c.num_predict, p.system, p.user)
 
 
 def llm_candidates(
     transcript: Transcript, cfg: AppConfig, llm: LLMClient, fingerprint: str,
     *, cancel: threading.Event | None = None, on_progress: Callable[[float, str], None] | None = None, title: str = "",
+    store: KeyedStore | None = None, audio: AudioAnalysis | None = None,
 ) -> tuple[list[Candidate], dict]:
+    """`store` keeps each section's answer as soon as it arrives, so a crash, a cancel or one failed section
+    does not cost the sections that already worked: the next run only asks the model for what is missing."""
     sections = make_sections(transcript, cfg.effective().llm)
-    stats = {"sections": len(sections), "raw_moments": 0, "dropped": [], "failed_sections": [], "retries": 0, "video_brief": ""}
+    stats = {"sections": len(sections), "raw_moments": 0, "dropped": [], "failed_sections": [], "retries": 0, "video_brief": "",
+             "cached_sections": 0}
     out: list[Candidate] = []
     if on_progress:
         on_progress(0.0, "Reading what the video is about")
-    context = stats["video_brief"] = video_brief(transcript, llm, title, cancel=cancel) if sections else ""
+    context = stats["video_brief"] = video_brief(transcript, llm, title, cancel=cancel, store=store) if sections else ""
     for n, sec in enumerate(sections):
         if on_progress:
             on_progress(n / max(1, len(sections)), f"Finding moments: section {n + 1}/{len(sections)}")
+        tags = audio_tags(sec.blocks, audio) if cfg.llm.audio_hints else None
+        hinted = bool(tags and any(tags))
         p = moment_prompt(
-            transcript=sec.render(), a=sec.start, b=sec.end, language=transcript.language,
+            transcript=sec.render(tags if hinted else None), a=sec.start, b=sec.end, language=transcript.language,
             min_s=cfg.selection.min_duration_s, max_s=cfg.selection.max_duration_s, max_moments=MAX_MOMENTS_PER_SECTION, context=context,
+            audio_hints=hinted,
         )
-        try:
-            result, attempts = structured_call(llm, p.system, p.user, MomentList, retries=cfg.llm.max_retries, cancel=cancel)
-        except LLMOutputError as exc:
-            log.warning("Section %d skipped: %s", sec.index, exc)
-            stats["failed_sections"].append(sec.index)
-            continue
-        stats["retries"] += attempts - 1
+        stats["hinted_sections"] = stats.get("hinted_sections", 0) + int(hinted)
+        key = section_cache_key(llm, cfg, p) if store is not None else ""
+        result = None
+        if store is not None and (hit := store.get(key)) is not None:
+            try:
+                result = MomentList.model_validate(hit)
+                stats["cached_sections"] += 1
+            except ValueError:
+                result = None
+        if result is None:
+            try:
+                result, attempts = structured_call(llm, p.system, p.user, MomentList, retries=cfg.llm.max_retries, cancel=cancel)
+            except LLMOutputError as exc:
+                log.warning("Section %d skipped: %s", sec.index, exc)
+                stats["failed_sections"].append(sec.index)
+                continue
+            stats["retries"] += attempts - 1
+            if store is not None:
+                store.put(key, result.model_dump(mode="json"))
         stats["raw_moments"] += len(result.moments)
         for m in result.moments:
             cand, why = moment_to_candidate(m, sec, transcript, cfg, fingerprint)
@@ -307,10 +361,11 @@ def heuristic_candidates(transcript: Transcript, audio: AudioAnalysis | None, cf
 def generate_candidates(
     transcript: Transcript, audio: AudioAnalysis | None, cfg: AppConfig, llm: LLMClient | None, fingerprint: str,
     source_duration: float, *, cancel: threading.Event | None = None, on_progress: Callable[[float, str], None] | None = None, title: str = "",
+    store: KeyedStore | None = None,
 ) -> tuple[list[Candidate], dict]:
     stats: dict = {"mode": "llm"}
     if cfg.llm.use_llm and llm is not None:
-        base, st = llm_candidates(transcript, cfg, llm, fingerprint, cancel=cancel, on_progress=on_progress, title=title)
+        base, st = llm_candidates(transcript, cfg, llm, fingerprint, cancel=cancel, on_progress=on_progress, title=title, store=store, audio=audio)
         stats.update(st)
     else:
         stats["mode"] = "heuristic"

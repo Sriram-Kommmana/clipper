@@ -53,3 +53,43 @@ class StageCache:
                 self.path(n).unlink()
             except FileNotFoundError:
                 pass
+
+
+class KeyedStore:
+    """Small persistent map of content-addressed results (e.g. one LLM answer per transcript section).
+
+    Keys already contain everything the answer depends on (model, prompt text, input text), so entries never
+    need invalidating: a changed input is simply a new key. Used so that a crash or a failed section does not
+    throw away the sections that already succeeded. A corrupt file counts as empty, never as an error.
+    """
+
+    MAX_ENTRIES = 2000
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._data: dict[str, Any] | None = None
+
+    def _load(self) -> dict[str, Any]:
+        if self._data is None:
+            self._data = {}
+            try:
+                entry = read_json(self.path)
+                if isinstance(entry, dict) and entry.get("schema") == SCHEMA_VERSION and isinstance(entry.get("entries"), dict):
+                    self._data = entry["entries"]
+            except (OSError, ValueError):
+                pass
+        return self._data
+
+    def get(self, key: str) -> Any | None:
+        return self._load().get(key)
+
+    def put(self, key: str, value: Any) -> None:
+        data = self._load()
+        data.pop(key, None)          # re-insert so the newest entries sit last
+        data[key] = value
+        while len(data) > self.MAX_ENTRIES:
+            data.pop(next(iter(data)))
+        atomic_write_json(self.path, {"schema": SCHEMA_VERSION, "entries": data})
+
+    def __len__(self) -> int:
+        return len(self._load())

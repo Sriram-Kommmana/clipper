@@ -85,6 +85,7 @@ class LLMConfig(_Section):
     section_max_words: int = Field(1400, ge=100)
     scoring_batch_size: int = Field(4, ge=1, le=16)
     use_llm: bool = True
+    audio_hints: bool = False       # tag transcript lines that were measurably louder than usual (laughter, applause, shouting)
 
     @model_validator(mode="after")
     def _check(self) -> "LLMConfig":
@@ -183,6 +184,8 @@ class RenderConfig(_Section):
     preview_width: int = Field(540, ge=144, le=2160)
     preview_height: int = Field(960, ge=144, le=3840)
     preview_crf: int = Field(30, ge=0, le=51)
+    normalize_audio: bool = True        # exported clips only (previews skip it); one measured linear gain, see src/rendering/loudness.py
+    target_lufs: float = Field(-14.0, ge=-30.0, le=-5.0)
 
     @model_validator(mode="after")
     def _even(self) -> "RenderConfig":

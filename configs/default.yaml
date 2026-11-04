@@ -59,6 +59,8 @@ llm:
   section_max_words: 1400
   scoring_batch_size: 4
   use_llm: true                   # false = deterministic-only fallback (no semantic understanding; see docs)
+  audio_hints: false              # true = mark lines that were measurably louder than usual (laughter/applause/shouting) in the prompt;
+                                  # off by default until it has been compared against off on real videos (python app.py eval)
 
 boundaries:
   pad_before_s: 0.25
@@ -120,6 +122,8 @@ render:
   preview_width: 540
   preview_height: 960
   preview_crf: 30
+  normalize_audio: true           # exports only: measure the clip, then apply one linear gain to target_lufs (no pumping); falls back to the original level
+  target_lufs: -14.0              # what the big short-video platforms normalise to
 
 smart_crop:
   detector: face                  # face | person | none   (OpenCV built-ins; no extra downloads)

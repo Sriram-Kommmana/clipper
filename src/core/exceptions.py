@@ -24,7 +24,7 @@ class ConfigError(ClipperError):
 
 
 class InvalidMediaError(ClipperError):
-    default_recovery = "Choose a readable .mp4/.mov/.mkv file with a video stream. Re-export or re-download it if it is corrupt."
+    default_recovery = "Choose a readable .mp4/.mov/.mkv/.webm/.m4v/.avi file with a video stream. Re-export or re-download it if it is corrupt."
 
 
 class FFmpegNotFoundError(ClipperError):

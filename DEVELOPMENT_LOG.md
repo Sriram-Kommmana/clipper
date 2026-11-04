@@ -124,6 +124,19 @@ no Ollama, Hugging Face/Ollama hosts blocked) — not on the target Windows lapt
 * Result on the 20-minute Hindi video: transcription 51 min → 3.6 min, word confidence 58 % → 78 %, moments dropped 9 of 18 → 0 of 16, candidates 8 → 12, selected 1 → 6. Devanagari captions and the word highlight render correctly. Top score moved only from 54 to 57, parts of the transcript are still garbled, and nobody has yet judged the clips by watching them.
 * Tests: **166 passed**.
 
+## Milestone 13 — robustness pass after reading competitor source (cloud sandbox: Linux, no GPU, no Ollama, no real models)
+Source of the ideas: six open-source clippers read at code level (AutoClip, jevcut, Chopify, Cutawan, Clipmint, opensource-clipping). Ideas only; no code or prompt text copied.
+* **Kept finished answers.** `KeyedStore` (`cache/llm_answers.json`) stores each section answer, the video brief and each scoring batch under a hash of model + sampling + exact prompt. The brief is stored because it is part of every section prompt: a re-worded brief would have invalidated every cached section.
+* **Failed sections are visible.** `stats.failed_sections` used to be recorded but never shown. It is now a project warning ("Incomplete analysis: … sections 2, 4") and the candidates stage is not considered fresh while sections are missing; scoring and selection are forced after any stage that re-ran.
+* **Scoring prompt shows the clip alone** (no before/after transcript, no video brief). Not measured on real data; the evaluation harness exists for that.
+* **Bug found by a test:** Python's `\w` does not match Devanagari vowel signs, so a word regex split Hindi words into pieces and no Hindi opener ever matched. `heuristics.py` now includes `\u0900-\u097F`. (`generator._norm_words` has the same `\w` pattern but applies it to both sides of a comparison, so hook checking still agrees with itself.)
+* **Smart crop per shot.** Cuts from the scene stage reset the planner: hold, then jump within 40 ms; undetected shot = centre crop; the sampler takes a frame just after each cut and forgets the previous subject there. Cuts are in the render cache key (`RENDER_VERSION` 4).
+* **Loudness.** Two-pass `loudnorm` with `linear=true` for exports only. Measured on the test tone: −22 LUFS in, about −14 LUFS out (±1.5 asserted).
+* **Evaluation:** `python app.py eval PROJECT --labels FILE [--compare PROJECT_B]`.
+* **Inputs:** WebM, M4V, AVI accepted (AVI probed for real in a test).
+* **Not done on purpose:** silence-aware cutting (our silences come from 0.5 s windows, coarser than the word timings we already use, so it risked clipping speech); mid-stage Whisper checkpointing (needs a real model to verify); a better face detector (needs a model download); a LICENSE (the owner's choice).
+* Tests: **225 collected** (was 166). New files: `test_resilience.py`, `test_render_robustness.py`, `test_evaluation.py`; additions to `test_pipeline.py`, `test_ingestion.py`.
+
 ## Known bugs / limitations
 * Whisper on a GPU, `qwen3:4b` and smart crop on real faces are unverified (see ROADMAP `[~]`).
 * Transcription/LLM stages cannot resume mid-stage; a cancelled/failed stage restarts from its beginning.

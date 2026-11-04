@@ -3,7 +3,8 @@
 Seven components, each 0-100, combined with configurable weights (scoring.weights):
 
   hook, clarity, completeness, payoff, escalation
-      LLM rubric (1-10 -> x10) judged on the clip's own text plus a little context.
+      LLM rubric (1-10 -> x10) judged on the clip's own text ALONE - no surrounding transcript - because that is
+      all a viewer who starts at its first word will have; with context the model resolves references they cannot.
       `completeness` is blended 70 % LLM / 30 % deterministic boundary quality
       (does it start on a sentence start and end on a sentence end?).
   format_fit      deterministic: Gaussian around the target duration (50 at the min/max edges).
@@ -30,10 +31,10 @@ from src.core.schemas import ScoreList
 from src.llm.ollama_client import LLMClient
 from src.llm.output_parser import structured_call
 from src.llm.prompts import score_prompt
+from src.storage.cache import KeyedStore, make_key
 from src.transcription.transcript_models import Transcript
 
 log = logging.getLogger(__name__)
-CONTEXT_S = 10.0
 
 
 def format_fit(duration: float, target: float, min_s: float, max_s: float) -> float:
@@ -78,18 +79,14 @@ def av_suitability(c: Candidate, transcript: Transcript, audio: AudioAnalysis | 
     return 0.45 * density + 0.25 * non_silence + 0.15 * energy + 0.15 * vis, notes
 
 
-def _context(transcript: Transcript, c: Candidate) -> tuple[str, str]:
-    return (
-        transcript.text_in_range(max(0.0, c.start - CONTEXT_S), c.start)[-400:],
-        transcript.text_in_range(c.end, c.end + CONTEXT_S)[:400],
-    )
-
-
 def _llm_scores(
-    cands: list[Candidate], transcript: Transcript, cfg: AppConfig, llm: LLMClient,
-    cancel: threading.Event | None, on_progress: Callable[[float, str], None] | None, context: str = "",
+    cands: list[Candidate], cfg: AppConfig, llm: LLMClient,
+    cancel: threading.Event | None, on_progress: Callable[[float, str], None] | None,
+    store: KeyedStore | None = None,
 ) -> dict[str, dict[str, float]]:
-    """Batch LLM scoring; a failed batch just leaves its candidates unscored (never aborts the stage)."""
+    """Batch LLM scoring; a failed batch just leaves its candidates unscored (never aborts the stage).
+
+    With a `store`, every finished batch is kept, so a re-run only scores the batches that are missing."""
     out: dict[str, dict[str, float]] = {}
     size = cfg.effective().llm.scoring_batch_size
     batches = [cands[i:i + size] for i in range(0, len(cands), size)]
@@ -98,15 +95,23 @@ def _llm_scores(
             on_progress(n / max(1, len(batches)), f"Scoring candidates: batch {n + 1}/{len(batches)}")
         blocks = []
         for c in batch:
-            before, after = _context(transcript, c)
-            blocks.append({"id": c.id, "duration": c.duration, "category": c.category,
-                           "before": before or "(start of video)", "text": c.excerpt[:1800], "after": after or "(end of video)"})
-        p = score_prompt(blocks, context)
-        try:
-            res, _ = structured_call(llm, p.system, p.user, ScoreList, retries=cfg.llm.max_retries, cancel=cancel)
-        except LLMOutputError as exc:
-            log.warning("Scoring batch %d failed: %s", n, exc)
-            continue
+            blocks.append({"id": c.id, "duration": c.duration, "category": c.category, "text": c.excerpt[:1800]})
+        p = score_prompt(blocks)
+        key = make_key("scores", getattr(llm, "model", ""), cfg.llm.temperature, cfg.llm.seed, p.system, p.user) if store is not None else ""
+        res = None
+        if store is not None and (hit := store.get(key)) is not None:
+            try:
+                res = ScoreList.model_validate(hit)
+            except ValueError:
+                res = None
+        if res is None:
+            try:
+                res, _ = structured_call(llm, p.system, p.user, ScoreList, retries=cfg.llm.max_retries, cancel=cancel)
+            except LLMOutputError as exc:
+                log.warning("Scoring batch %d failed: %s", n, exc)
+                continue
+            if store is not None:
+                store.put(key, res.model_dump(mode="json"))
         valid = {c.id for c in batch}
         for s in res.scores:
             if s.id in valid:
@@ -147,10 +152,12 @@ def compute_breakdown(
 def score_candidates(
     cands: list[Candidate], transcript: Transcript, audio: AudioAnalysis | None, cfg: AppConfig, llm: LLMClient | None,
     *, visual_fn: Callable[[Candidate], VisualCheck] | None = None, cancel: threading.Event | None = None,
-    on_progress: Callable[[float, str], None] | None = None, context: str = "",
+    on_progress: Callable[[float, str], None] | None = None, context: str = "", store: KeyedStore | None = None,
 ) -> list[Candidate]:
-    """Returns new Candidates with `.scores` set. Visual checks run only for the best-looking ones (I/O cost)."""
-    llm_vals = _llm_scores(cands, transcript, cfg, llm, cancel, on_progress, context) if (llm and cfg.llm.use_llm and cands) else {}
+    """Returns new Candidates with `.scores` set. Visual checks run only for the best-looking ones (I/O cost).
+
+    `context` (the video brief) is accepted for compatibility but no longer sent: clips are judged on their own text."""
+    llm_vals = _llm_scores(cands, cfg, llm, cancel, on_progress, store) if (llm and cfg.llm.use_llm and cands) else {}
     first = {c.id: compute_breakdown(c, llm_vals.get(c.id), transcript, audio, None, cfg) for c in cands}
     visuals: dict[str, VisualCheck] = {}
     if visual_fn:

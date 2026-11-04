@@ -3,6 +3,7 @@
     python app.py                        # start the review UI on http://127.0.0.1:7860
     python app.py run VIDEO [options]    # headless: analyse a video, optionally export the top clips
     python app.py check                  # hardware / dependency report
+    python app.py eval PROJECT --labels FILE   # compare a project's clips with moments you marked by hand
 """
 from __future__ import annotations
 
@@ -105,6 +106,45 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _project_spans(folder: str):
+    from src.evaluation.metrics import Span
+    from src.storage.project_store import ProjectStore
+
+    store = ProjectStore(Path(folder).expanduser())
+    store.load_state()
+    cands = store.load_candidates()
+    if not cands:
+        raise ClipperError(f"{folder} has no candidates yet.", recovery="Run the analysis on this project first.")
+    sp = lambda c: Span(c.start, c.end, c.total_score, c.id, c.title)
+    return [sp(c) for c in cands if not c.filter_reason_blocks()], [sp(c) for c in cands if c.selected or c.status == "approved"]
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Compare a project's clips with moments you marked by hand (see docs/EVALUATION.md)."""
+    import json as _json
+
+    from src.evaluation.metrics import LabelError, compare, evaluate, format_report, load_labels
+
+    try:
+        labels = load_labels(args.labels)
+    except LabelError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    reports = []
+    for folder in [args.project, *([args.compare] if args.compare else [])]:
+        cands, sel = _project_spans(folder)
+        reports.append((folder, evaluate(labels, cands, sel, iou_min=args.iou)))
+    if args.json:
+        print(_json.dumps({f: r.as_dict() for f, r in reports}, indent=2))
+        return 0
+    for folder, r in reports:
+        print(format_report(r, Path(folder).name), end="\n\n")
+    if len(reports) == 2:
+        print("A =", reports[0][0], "\nB =", reports[1][0])
+        print(compare(reports[0][1], reports[1][1]))
+    return 0
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     from src.utils.hardware_detection import build_report, format_report
 
@@ -137,9 +177,15 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--force", action="store_true", help="ignore caches")
     run.add_argument("--export-top", type=int, metavar="N", help="approve and export the N best clips")
     sub.add_parser("check", help="hardware / dependency report")
+    ev = sub.add_parser("eval", help="score a project's clips against moments you labelled by hand")
+    ev.add_argument("project", help="project folder (projects/<name>)")
+    ev.add_argument("--labels", required=True, metavar="FILE", help='JSON: {"moments": [{"start": 12.0, "end": 58.0}]} in source-video seconds')
+    ev.add_argument("--compare", metavar="PROJECT_B", help="a second project of the same video (e.g. other settings) for an A/B comparison")
+    ev.add_argument("--iou", type=float, default=0.4, help="overlap needed to count a clip as that moment (default 0.4)")
+    ev.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
     try:
-        return {"run": cmd_run, "check": cmd_check}.get(args.cmd, cmd_ui)(args)
+        return {"run": cmd_run, "check": cmd_check, "eval": cmd_eval}.get(args.cmd, cmd_ui)(args)
     except ClipperError as exc:
         print(exc.user_message(), file=sys.stderr)
         return 1

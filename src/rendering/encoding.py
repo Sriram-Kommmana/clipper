@@ -52,7 +52,10 @@ def choose_encoder(runner: FFmpegRunner, cfg: RenderConfig, *, preview: bool, al
                                      "-profile:v", "high", *(["-threads", str(runner.threads)] if runner.threads else [])), False)
 
 
-def audio_args(bitrate: str, has_audio: bool) -> list[str]:
+def audio_args(bitrate: str, has_audio: bool, norm_filter: str | None = None) -> list[str]:
     if not has_audio:
         return ["-an"]
-    return ["-map", "0:a:0", "-c:a", "aac", "-b:a", bitrate, "-ar", "48000", "-ac", "2", "-af", "aresample=async=1:first_pts=0"]
+    chain = "aresample=async=1:first_pts=0"
+    if norm_filter:
+        chain = f"{norm_filter},{chain}"
+    return ["-map", "0:a:0", "-c:a", "aac", "-b:a", bitrate, "-ar", "48000", "-ac", "2", "-af", chain]

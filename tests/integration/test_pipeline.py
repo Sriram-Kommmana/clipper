@@ -264,3 +264,34 @@ def test_export_writes_all_artifacts_and_summary(env):
     assert sm["candidates"]["approved"] == 1 and sm["timing_s"]["rendering"] > 0 and sm["timing_s"]["transcription"] >= 0
     assert (store.root / "summary.md").read_text(encoding="utf-8").startswith("# Project summary")
     assert build_summary(store)["source"]["duration_s"] == 24.0
+
+
+def test_failed_sections_are_reported_and_retried_on_the_next_run(env, monkeypatch):
+    """A part of the transcript the model never answered must not look like 'nothing there': warn, and retry just that."""
+    import src.core.job_manager as jm
+
+    real = jm.generate_candidates
+    state = {"fail": True}
+
+    def flaky(*a, **k):
+        cands, stats = real(*a, **k)
+        stats = {**stats, "sections": 4, "failed_sections": [1, 3] if state["fail"] else []}
+        return cands, stats
+
+    monkeypatch.setattr(jm, "generate_candidates", flaky)
+    store = env[1]
+    first = make_job(env).run()
+    assert first.success and "candidates" in first.completed
+    warns = [w for w in store.state.warnings if w.startswith(jm.SECTION_WARNING)]
+    assert len(warns) == 1 and "2 of 4" in warns[0] and "sections 2, 4" in warns[0]
+
+    state["fail"] = False
+    second = make_job(env).run()
+    assert second.success
+    assert "candidates" in second.completed and "scoring" in second.completed and "selection" in second.completed, \
+        "the stage with holes is redone, and everything after it follows"
+    assert "transcribe" in second.cached
+    assert not [w for w in store.state.warnings if w.startswith(jm.SECTION_WARNING)], "the warning goes away once the holes are filled"
+
+    third = make_job(env).run()
+    assert not third.completed and set(third.cached) == set(STAGES), "a clean run is fully cached again"
