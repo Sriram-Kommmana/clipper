@@ -35,8 +35,14 @@ said or done). Pick the one that fits best; do not default to story.
 9. List the strongest moment first. If nothing qualifies, return {{"moments": []}}. Do not pad the list.
 Reply with JSON only."""
 
+AUDIO_NOTE = """Some lines end with an [audio: ...] note measured from the recording itself: the speaker or the room was clearly \
+louder than usual there. It can mean laughter, applause, shouting or excitement, which the words alone do not show. Treat it as \
+supporting evidence for a moment that also works as text; never choose a moment only because of it.
+"""
+
 MOMENT_USER = """{context}Transcript section ({a:.0f}s - {b:.0f}s), language: {language}.
 Moments must use only the lines below.
+{audio_note}
 
 {transcript}
 
@@ -52,9 +58,11 @@ BRIEF_USER = """File name: {title}
 Transcript samples:
 {sample}"""
 
-SCORE_SYSTEM = """You are a strict editor judging short-video clip candidates. For each candidate you see the clip's \
-transcript and a little surrounding context. Judge ONLY the text shown; do not assume anything about the video. \
-Speech recognition makes small errors, so do not mark a clip down for those alone.
+SCORE_SYSTEM = """You are a strict editor judging short-video clip candidates. For each candidate you see ONLY the clip's own \
+transcript, exactly what a viewer who starts watching at its first word will hear, with nothing before or after it. Judge ONLY the \
+text shown; do not assume anything about the video or the rest of the conversation. If the clip leans on a person, thing or event \
+that it never identifies ("he", "that thing", "as I said"), or opens by finishing a thought that began earlier, the viewer cannot \
+follow it: mark clarity and completeness down. Speech recognition makes small errors, so do not mark a clip down for those alone.
 
 Rate each from 1 to 10 (most clips deserve 4-7; 9-10 is rare):
 - hook: do the first seconds grab attention (a question, surprise, bold claim, vivid start)?
@@ -64,7 +72,7 @@ Rate each from 1 to 10 (most clips deserve 4-7; 9-10 is rare):
 - escalation: does tension, curiosity, humour or emotion build as it goes?
 Give one short factual "reason" (max 20 words) that refers only to the shown text. Reply with JSON only."""
 
-SCORE_USER = """{context}Rate these {n} candidates.
+SCORE_USER = """Rate these {n} candidates.
 
 {blocks}
 
@@ -72,9 +80,7 @@ Reply as {{"scores": [{{"id": "<candidate id>", "hook": 5, "clarity": 5, "comple
 "reason": ""}}]}} with exactly one entry per candidate id."""
 
 SCORE_BLOCK = """### Candidate {id} ({duration:.0f}s, category: {category})
-[context before] {before}
-[CLIP] {text}
-[context after] {after}"""
+[CLIP] {text}"""
 
 
 @dataclass(frozen=True)
@@ -88,11 +94,12 @@ def _context_line(context: str) -> str:
 
 
 def moment_prompt(*, transcript: str, a: float, b: float, language: str, min_s: float, max_s: float, max_moments: int,
-                  line_s: int = 10, context: str = "") -> PromptPair:
+                  line_s: int = 10, context: str = "", audio_hints: bool = False) -> PromptPair:
     return PromptPair(
         MOMENT_SYSTEM.format(min_s=int(min_s), max_s=int(max_s), line_s=line_s, min_lines=max(2, round(min_s / line_s)),
                              max_lines=max(3, round(max_s / line_s)), lang_hint=LANG_HINT.format(language=language)),
-        MOMENT_USER.format(context=_context_line(context), a=a, b=b, language=language, transcript=transcript, max_moments=max_moments),
+        MOMENT_USER.format(context=_context_line(context), a=a, b=b, language=language, transcript=transcript, max_moments=max_moments,
+                           audio_note=("\n" + AUDIO_NOTE) if audio_hints else ""),
     )
 
 
@@ -100,6 +107,8 @@ def brief_prompt(title: str, sample: str) -> PromptPair:
     return PromptPair(BRIEF_SYSTEM, BRIEF_USER.format(title=title or "(unknown)", sample=sample))
 
 
-def score_prompt(blocks: list[dict], context: str = "") -> PromptPair:
+def score_prompt(blocks: list[dict]) -> PromptPair:
+    """Each block is judged on the clip's own text only. The video brief and the surrounding transcript are left out on
+    purpose: with them the model resolves dangling references that a viewer who starts at the first word cannot."""
     text = "\n\n".join(SCORE_BLOCK.format(**b) for b in blocks)
-    return PromptPair(SCORE_SYSTEM, SCORE_USER.format(context=_context_line(context), n=len(blocks), blocks=text))
+    return PromptPair(SCORE_SYSTEM, SCORE_USER.format(n=len(blocks), blocks=text))

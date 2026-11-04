@@ -59,6 +59,8 @@ llm:
   section_max_words: 1400
   scoring_batch_size: 4
   use_llm: true                   # false = deterministic-only fallback (no semantic understanding; see docs)
+  audio_hints: false              # true = mark lines that were measurably louder than usual (laughter/applause/shouting) in the prompt;
+                                  # off by default until it has been compared against off on real videos (python app.py eval)
 
 boundaries:
   pad_before_s: 0.25

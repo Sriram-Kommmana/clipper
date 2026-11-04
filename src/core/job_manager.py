@@ -22,6 +22,7 @@ from src.analysis.audio_analysis import AudioAnalysis, analyze_audio_file
 from src.analysis.frame_extraction import extract_thumbnails, visual_suitability
 from src.analysis.scene_detection import SceneAnalysis, detect_scenes
 from src.candidates.generator import generate_candidates
+from src.candidates.heuristics import review_warnings
 from src.candidates.merger import merge_candidates
 from src.candidates.scorer import score_candidates
 from src.candidates.selector import select_candidates
@@ -30,7 +31,7 @@ from src.core.exceptions import ClipperError, JobCancelled, ResourceExhaustedErr
 from src.core.models import Candidate, VideoInfo, now_iso
 from src.llm.ollama_client import LLMClient, OllamaClient
 from src.rendering.ffmpeg_runner import FFmpegRunner
-from src.storage.cache import StageCache, make_key
+from src.storage.cache import KeyedStore, StageCache, make_key
 from src.storage.project_store import ProjectStore
 from src.transcription.importer import store_import, stored_import
 from src.transcription.transcriber import WhisperBackend, extract_audio_wav, transcribe_video, transcript_cache_key
@@ -44,7 +45,8 @@ STAGE_LABELS = {
     "candidates": "Candidate generation", "scoring": "Scoring", "selection": "Selection",
 }
 STAGE_WEIGHT = {"transcribe": 0.40, "audio": 0.05, "scenes": 0.10, "candidates": 0.22, "scoring": 0.18, "selection": 0.05}
-VERSIONS = {"audio": 2, "scenes": 1, "cand": 5, "score": 3}
+VERSIONS = {"audio": 2, "scenes": 1, "cand": 5, "score": 4}
+SECTION_WARNING = "Incomplete analysis:"
 
 ProgressCb = Callable[[str, float, float, str], None]   # stage, stage_fraction, overall_fraction, message
 
@@ -120,7 +122,7 @@ class JobManager:
         k["audio"] = make_key("audio", VERSIONS["audio"], fp, c.audio.model_dump())
         k["scenes"] = make_key("scenes", VERSIONS["scenes"], fp, c.scenes.model_dump())
         sel = {n: getattr(c.selection, n) for n in ("min_duration_s", "max_duration_s", "target_duration_s", "overflow_tolerance")}
-        llm = {n: getattr(c.llm, n) for n in ("model", "use_llm", "num_ctx", "temperature", "seed", "section_seconds", "section_overlap_s", "section_max_words")}
+        llm = {n: getattr(c.llm, n) for n in ("model", "use_llm", "num_ctx", "temperature", "seed", "section_seconds", "section_overlap_s", "section_max_words", "audio_hints")}
         k["candidates"] = make_key("cand", VERSIONS["cand"], fp, k["transcribe"], k["audio"], llm, sel, c.boundaries.model_dump())
         k["scoring"] = make_key("score", VERSIONS["score"], k["candidates"], c.llm.model, c.llm.use_llm, c.llm.scoring_batch_size, c.scoring.model_dump(), sel)
         k["selection"] = make_key("select", k["scoring"], c.selection.model_dump())
@@ -139,6 +141,7 @@ class JobManager:
             if st.status == "running":
                 store.update_stage(name, status="interrupted", message="Previous run was interrupted; will re-run.")
         done_weight = 0.0
+        reran_upstream = False
         try:
             keys = self.keys()
             for name in stages:
@@ -150,6 +153,8 @@ class JobManager:
                     if on_progress:
                         on_progress(_n, frac, _base + STAGE_WEIGHT[_n] * frac, msg or STAGE_LABELS[_n])
 
+                if name in ("scoring", "selection") and reran_upstream:
+                    force = force | {name}       # an earlier stage produced new output, so this one must not reuse old results
                 if name not in force and self._is_fresh(name, keys[name]):
                     store.update_stage(name, cached=True, message="Reused from cache", progress=1.0)
                     report.cached.append(name)
@@ -168,6 +173,8 @@ class JobManager:
                 store.update_stage(name, status="done", finished_at=now_iso(), duration_s=round(time.monotonic() - t0, 2),
                                    cache_key=keys[name], progress=1.0, message=details if details != "Starting" else "Done")
                 report.completed.append(name)
+                if name in ("candidates", "scoring"):
+                    reran_upstream = True
                 done_weight += STAGE_WEIGHT[name]
                 prog(1.0, "Done")
             report.success = True
@@ -211,7 +218,16 @@ class JobManager:
         if name == "selection":
             return self.store.candidates_path.exists()
         cache_name = {"transcribe": "transcript", "candidates": "candidates_raw", "scoring": "candidates_scored"}.get(name, name)
-        return self.cache.load(cache_name, key) is not None
+        data = self.cache.load(cache_name, key)
+        if data is None:
+            return False
+        if name == "candidates" and (data.get("stats") or {}).get("failed_sections"):
+            return False        # some sections were never analysed: retry them (finished sections come from the section store)
+        return True
+
+    def _llm_store(self) -> KeyedStore:
+        """Per-project store of finished LLM answers (one per transcript section / scoring batch)."""
+        return KeyedStore(self.store.cache_dir / "llm_answers.json")
 
     def _cleanup_work(self) -> None:
         for f in list(self.store.work_dir.glob("*")):
@@ -290,7 +306,9 @@ class JobManager:
         llm = self._ensure_llm_ready()
         c = self.eff
         cands, stats = generate_candidates(transcript, audio, c, llm, self.info.fingerprint, self.info.duration, cancel=cancel,
-                                           on_progress=lambda f, m: prog(0.9 * f, m), title=Path(self.info.filename).stem.replace("_", " "))
+                                           on_progress=lambda f, m: prog(0.9 * f, m), title=Path(self.info.filename).stem.replace("_", " "),
+                                           store=self._llm_store())
+        self._report_section_coverage(stats)
         limits = Limits.from_config(c.selection)
         refined = [refine_boundaries(x, transcript, c.boundaries, limits, self.info.duration) for x in cands]
         refined, n = merge_candidates(refined, limits.hard_max)
@@ -303,6 +321,7 @@ class JobManager:
                 cid += "x"
             used.add(cid)
             warnings = list(x.warnings)
+            warnings += [w for w in review_warnings(x.excerpt) if w not in warnings]
             if scenes and scenes.cut_rate(x.start, x.end) > 0.3:
                 warnings.append("Frequent scene cuts - the blurred-background layout is safer than smart crop here.")
             why = hard_failures(x, transcript, audio, self.info.duration, limits)
@@ -310,6 +329,18 @@ class JobManager:
         stats["invalid"] = sum(1 for x in final if x.filter_reason)
         self.cache.save("candidates_raw", key, {"candidates": [x.model_dump(mode="json") for x in final], "stats": stats})
         prog(1.0, f"{len(final)} candidates")
+
+    def _report_section_coverage(self, stats: dict) -> None:
+        """A section the model could not answer is a hole in the video nobody looked at. Say so instead of letting the
+        result pass for 'nothing worth clipping there'; the next run retries just those sections."""
+        self.store.clear_warnings(SECTION_WARNING)
+        failed, total = len(stats.get("failed_sections") or []), stats.get("sections") or 0
+        if failed and total:
+            self.store.add_warning(
+                f"{SECTION_WARNING} the model gave no usable answer for {failed} of {total} parts of the transcript "
+                f"(sections {', '.join(str(i + 1) for i in stats['failed_sections'])}), so clips from those parts are missing. "
+                "Press Run / resume to retry only those parts, or try a larger model (llm.model: qwen3:8b)."
+            )
 
     def _stage_scoring(self, key, prog, cancel) -> None:
         raw = self.cache.load_any("candidates_raw")
@@ -321,7 +352,7 @@ class JobManager:
         video = Path(self.info.path)
         scored = score_candidates(valid, transcript, audio, self.eff, llm, cancel=cancel,
                                   visual_fn=lambda c: visual_suitability(video, c.start, c.end), on_progress=prog,
-                                  context=raw.get("stats", {}).get("video_brief", ""))
+                                  store=self._llm_store())
         out = scored + [x for x in cands if x.filter_reason]
         llm_scored = sum(1 for x in scored if x.scores and x.scores.llm_scored)
         if scored and llm is not None and llm_scored < len(scored):

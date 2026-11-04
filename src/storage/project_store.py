@@ -131,6 +131,14 @@ class ProjectStore:
                 self.state.warnings.append(text)
                 self.save_state()
 
+    def clear_warnings(self, prefix: str) -> None:
+        """Drop warnings that start with `prefix` (a later successful run supersedes them)."""
+        with self._lock:
+            kept = [w for w in self.state.warnings if not w.startswith(prefix)]
+            if len(kept) != len(self.state.warnings):
+                self.state.warnings = kept
+                self.save_state()
+
     def add_error(self, text: str) -> None:
         with self._lock:
             self.state.errors.append(f"{now_iso()} {text}")
